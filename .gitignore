@@ -1,0 +1,18 @@
+# --- секреты и рантайм-данные (никогда в git) ---
+.env
+data/
+
+# --- сгенерированный сайт (по договорённости — сайт отдельно) ---
+site/
+camouflage_backup/
+
+# --- python окружения и кэши ---
+venv/
+bot/venv/
+__pycache__/
+*.pyc
+*.log
+bot/*.log
+
+# --- legacy: старый Helix-фетчер, заменён на fetch_streamdb.py ---
+fetch_badges.py

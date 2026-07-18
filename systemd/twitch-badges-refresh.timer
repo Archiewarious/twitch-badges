@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic Twitch badges refresh
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

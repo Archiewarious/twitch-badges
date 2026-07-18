@@ -1,0 +1,10 @@
+[Unit]
+Description=Fetch Twitch badges, regenerate site, deploy site+images
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=archie
+WorkingDirectory=/home/archie/projects/twitch-badges
+ExecStart=/home/archie/projects/twitch-badges/refresh.sh

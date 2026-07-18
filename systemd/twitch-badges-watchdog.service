@@ -1,0 +1,7 @@
+[Unit]
+Description=Twitch Drops watchdog (staleness / bot / disk)
+[Service]
+Type=oneshot
+User=archie
+EnvironmentFile=/home/archie/projects/twitch-badges/.env
+ExecStart=/home/archie/projects/twitch-badges/monitor/watchdog.sh

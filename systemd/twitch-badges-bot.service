@@ -1,0 +1,18 @@
+[Unit]
+Description=Twitch Drops Info Telegram bot (@InfoTwitchBot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=archie
+WorkingDirectory=/home/archie/projects/twitch-badges/bot
+EnvironmentFile=/home/archie/projects/twitch-badges/.env
+ExecStart=/home/archie/projects/twitch-badges/bot/venv/bin/python /home/archie/projects/twitch-badges/bot/bot.py
+Restart=always
+RestartSec=5
+# боту нужно писать published.json
+ReadWritePaths=/home/archie/projects/twitch-badges/data
+
+[Install]
+WantedBy=multi-user.target
