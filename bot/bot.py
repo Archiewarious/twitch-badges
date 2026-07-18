@@ -378,7 +378,10 @@ async def inline_query(update, context):
 # ────────────────────────── автопубликация в канал ──────────────────────────
 
 def dedup_key(r):
-    return f"{r['set_id']}|{r.get('group') or ''}"
+    # Только стабильный set_id. НЕ включаем group: StreamDatabase иногда переименовывает
+    # событие («Summer Drop Fest» ↔ «Summer Drops Fest»), и если бы group был в ключе,
+    # бейдж считался бы новым при каждом переименовании → повторный пост в канал.
+    return r["set_id"]
 
 
 def iso(dt):
