@@ -81,6 +81,12 @@ CARDS_DIR = PROJECT_ROOT / "data" / "cards"
 PUBLISHED_FILE = PROJECT_ROOT / "data" / "published.json"
 
 PUBLISH_INTERVAL = 600   # проверяем базу раз в 10 минут (появления постим по одному за тик)
+# Тихие часы (МСК): в этом окне НЕ шлём несрочные посты («последний день» и анонсы,
+# до старта которых >сутки) — придерживаем до утра, чтобы не будить ночью. Срочное
+# («доступен сейчас», «стартовало», анонс со стартом <сутки) идёт в любое время.
+# START==END → тихие часы выключены.
+QUIET_START = int(os.environ.get("QUIET_HOURS_START", "23"))  # с 23:00 МСК
+QUIET_END = int(os.environ.get("QUIET_HOURS_END", "9"))       # до 09:00 МСК
 # Отдельный рубильник постинга: даже с заданным CHANNEL_ID пост не пойдёт,
 # пока PUBLISH_ENABLED не true. Так можно донастроить, не постя раньше времени.
 PUBLISH_ENABLED = os.environ.get("PUBLISH_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
@@ -520,6 +526,26 @@ async def post_ending_album(context, ending):
     return posted
 
 
+def in_quiet_hours(now):
+    """Сейчас тихие часы (по МСК)? START==END → выключено."""
+    if QUIET_START == QUIET_END:
+        return False
+    h = (now + timedelta(hours=3)).hour  # UTC → МСК
+    if QUIET_START < QUIET_END:
+        return QUIET_START <= h < QUIET_END
+    return h >= QUIET_START or h < QUIET_END  # окно через полночь (23→9)
+
+
+def night_hold(kind, r, now):
+    """Придержать ли пост в тихие часы (несрочное). Срочное — всегда сразу."""
+    if kind == "ending":
+        return True
+    if kind == "appeared_upcoming":
+        s = (r.get("window") or {}).get("start")
+        return bool(s) and (s - now).total_seconds() > 86400  # до старта >суток
+    return False
+
+
 async def publish_new(context: ContextTypes.DEFAULT_TYPE):
     if not CHANNEL_ID or not PUBLISH_ENABLED:
         return
@@ -568,11 +594,14 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
                   and 0 <= (w["end"] - now).total_seconds() <= 86400):
                 ending.append((key, r))
 
+    night = in_quiet_hours(now)
+
     # ПОЯВЛЕНИЯ/СТАРТЫ: по ОДНОМУ за тик — так они расходятся во времени (интервал =
     # PUBLISH_INTERVAL, 10 мин), а не валятся пачкой. Разные ивенты = разные посты
-    # естественно. Остальные — на следующие тики (диф пересчитается и возьмёт следующий).
-    if announce:
-        key, r, kind = announce[0]
+    # естественно. Ночью несрочные анонсы (старт >суток) придерживаем до утра.
+    ready = [item for item in announce if not (night and night_hold(item[2], item[1], now))]
+    if ready:
+        key, r, kind = ready[0]
         try:
             if await post_badge(context, r, kind):
                 if kind == "started":
@@ -583,9 +612,12 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             log.exception("publish_new: пропускаю анонс %s (%s)", key, kind)
 
-    # ПОСЛЕДНИЙ ДЕНЬ: все, кто вошёл в 24ч-окно на этом тике — ОДНИМ альбомом
-    # (все картинки + инструкции), а не N постов.
-    if ending:
+    # ПОСЛЕДНИЙ ДЕНЬ: все, кто вошёл в 24ч-окно на этом тике — ОДНИМ альбомом.
+    # Ночью придерживаем до утра (не срочно — весь день впереди). 24ч-окно шире тихих
+    # часов, так что утренний тик всё равно застанет бейдж «в последний день».
+    if ending and night:
+        log.info("тихие часы: %d 'последний день' придержаны до утра", len(ending))
+    elif ending:
         posted = await post_ending_album(context, ending)
         if posted:
             for key, r in ending:
