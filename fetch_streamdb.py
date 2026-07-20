@@ -168,7 +168,10 @@ def main() -> int:
     events_raw = fetch_next_data(build_id, "events")
 
     badge_list = find_badge_list(catalog_raw["pageProps"]) or []
-    events = events_raw.get("pageProps", {}).get("initialData", [])
+    # StreamDatabase переименовал поле событий initialData → initialEvents (июль 2026).
+    # Читаем оба ключа (новый приоритетнее) — устойчиво к переименованию туда-обратно.
+    _pp = events_raw.get("pageProps", {})
+    events = _pp.get("initialEvents") or _pp.get("initialData") or []
 
     # GUARD против тихого обнуления: если StreamDatabase сменит вёрстку, find_badge_list
     # вернёт [] → снапшот с badges:[] → refresh.sh rsync --delete вычистит /var/www
