@@ -479,8 +479,10 @@ async def post_badge(context, r, kind, now=None):
         return False
 
 
-def album_ending_caption(r, header=False):
-    """Компактная подпись под фото в альбоме «последний день»: имя + дедлайн + как."""
+def album_ending_caption(r, header=False, footer=False):
+    """Компактная подпись под фото в альбоме «последний день»: имя + дедлайн + как.
+    footer=True — приписать ссылки на канал/бота (альбомы Telegram не поддерживают
+    inline-кнопки, поэтому ссылка на канал идёт текстом у последнего фото)."""
     lines = []
     if header:
         lines.append("⏳ <b>Последний день — успей получить!</b>\n")
@@ -489,6 +491,8 @@ def album_ending_caption(r, header=False):
     if w.get("end"):
         lines.append(f"📅 До {fmt_dt(w['end'])} (МСК)")
     lines.append(how_short(r))
+    if footer:
+        lines += ["", footer_line()]
     return "\n".join(lines)
 
 
@@ -506,7 +510,8 @@ async def post_ending_album(context, ending):
             if not url:
                 continue
             media.append(InputMediaPhoto(
-                media=url, caption=album_ending_caption(r, header=(i == 0)),
+                media=url,
+                caption=album_ending_caption(r, header=(i == 0), footer=(i == len(chunk) - 1)),
                 parse_mode=ParseMode.HTML))
             keys.append(key)
         if not media:
@@ -617,7 +622,18 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
     # часов, так что утренний тик всё равно застанет бейдж «в последний день».
     if ending and night:
         log.info("тихие часы: %d 'последний день' придержаны до утра", len(ending))
+    elif len(ending) == 1:
+        # Один «последний день» → обычный пост с кнопками (▶️ смотреть, 📱 наш канал, 🤖 бот).
+        key, r = ending[0]
+        try:
+            if await post_badge(context, r, "ending"):
+                state[key]["ending"] = True
+                state[key]["end"] = iso((r.get("window") or {}).get("end"))
+                save_state(state)
+        except Exception:
+            log.exception("publish_new: пропускаю 'последний день' %s", key)
     elif ending:
+        # Несколько сразу → альбом (кнопок нет — лимит Telegram, ссылка на канал в тексте).
         posted = await post_ending_album(context, ending)
         if posted:
             for key, r in ending:
