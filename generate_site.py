@@ -234,6 +234,11 @@ def collect_windows_by_set_id(events, twitch_links=None):
                     "end": end,
                     "cost": ", ".join(av.get("costs") or []),
                     "condition": describe_condition_ru(av),
+                    # Билет на офлайн-мероприятие (TwitchCon и т.п.) — не "Twitch Drop"
+                    # в смысле бота/канала: нельзя получить действием на Twitch, нужно
+                    # физически купить билет и поехать. Бот/канал это скрывают (см.
+                    # bot.py is_shown), сайт-каталог продолжает показывать — там уместно.
+                    "offline_event": bool(av.get("twitchcon")),
                     # Диплинк-поля для кнопок бота (inline + автопост в канал):
                     "id": av.get("_id"),
                     "all_ids": ids_by_group.get(grp, []),
