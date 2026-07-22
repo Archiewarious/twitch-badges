@@ -182,9 +182,11 @@ def short_cond(cond):
         return "Подписка или гифт"
     if low.startswith("смотреть эфир"):
         return c.replace("Смотреть эфир", "Смотреть")
-    m = re.search(r"билет twitchcon на (.+)$", low)
+    m = re.search(r"билет на офлайн-мероприятие twitchcon \(([^)]+)\)", low)
     if m:
-        return f"Билет TwitchCon ({m.group(1)})"
+        return f"Билет на TwitchCon — офлайн, {m.group(1)}"  # явно: не Twitch-дроп
+    if "офлайн-мероприятие twitchcon" in low:
+        return "Билет на TwitchCon — офлайн-мероприятие"
     return c
 
 
@@ -202,9 +204,17 @@ def watch_target(r):
     if href and game and str(href).startswith("https://"):
         return ("category", game, href)
     tl = w.get("twitch_link")
-    if tl and str(tl.get("url") or "").startswith("https://"):
-        kind = "event" if "/directory/event/" in tl["url"] else "category"
-        return (kind, tl.get("label") or "на Twitch", tl["url"])
+    url = str(tl.get("url") or "") if tl else ""
+    if url.startswith("https://"):
+        if "/directory/event/" in url:
+            return ("event", tl.get("label") or "на Twitch", url)
+        if "/directory/category/" in url:
+            return ("category", tl.get("label") or "на Twitch", url)
+        # Не twitch.tv вообще (напр. официальный сайт офлайн-мероприятия типа
+        # TwitchCon) — не приписываем "категория"/"событие", это неверно.
+        # Метка со страницы StreamDatabase часто на английском/с опечатками —
+        # не тащим её в кнопку/текст поста, ставим нейтральную формулировку.
+        return ("external", "официальный сайт", url)
     return (None, None, None)
 
 
@@ -213,7 +223,8 @@ def how_short(r):
     cond = short_cond(r.get("condition")) or "условие не определено"
     kind, label, url = watch_target(r)
     if url:
-        prep = {"category": "в категории", "event": "на каналах события"}[kind]
+        prep = {"category": "в категории", "event": "на каналах события",
+                "external": "—"}[kind]
         return f'📍 {esc(cond)} {prep} <a href="{esc(url)}">{esc(label)}</a>'
     # Каналовый бейдж без курируемой ссылки — просто чёткий текст, без битых ссылок.
     if (r.get("window") or {}).get("channel_count"):
@@ -236,11 +247,12 @@ def build_caption(top_lines, r):
 
 
 def watch_button(r):
-    """Кнопка за значком: категория/событие на Twitch (если ссылка есть)."""
+    """Кнопка за значком: категория/событие на Twitch, или внешний сайт (если ссылка есть)."""
     kind, label, url = watch_target(r)
     if not url:
         return None
-    return InlineKeyboardButton(f"▶️ Смотреть: {label}", url=url)
+    text = "🔗 Официальный сайт" if kind == "external" else f"▶️ Смотреть: {label}"
+    return InlineKeyboardButton(text, url=url)
 
 
 def twitch_buttons(r):

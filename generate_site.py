@@ -141,8 +141,11 @@ def describe_condition_ru(av):
 
     if av.get("twitchcon"):
         days = av.get("twitchcon_days")
-        parts.append(f"купить билет TwitchCon на {days} {plural(days, 'день', 'дня', 'дней')}"
-                      if days else "купить билет TwitchCon")
+        # Явно "офлайн-мероприятие" — иначе можно принять за обычный Twitch-дроп
+        # за просмотр стрима (условие принципиально другое: физический билет).
+        parts.append(f"купить билет на офлайн-мероприятие TwitchCon ({days} "
+                      f"{plural(days, 'день', 'дня', 'дней')})" if days
+                      else "купить билет на офлайн-мероприятие TwitchCon")
     if av.get("bits"):
         parts.append("потратить Bits")
     if av.get("clip") and not av.get("watch"):

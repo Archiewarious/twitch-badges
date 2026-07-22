@@ -107,6 +107,13 @@ def find_badge_list(obj):
 DIR_LINK_RE = re.compile(
     r"\[([^\]]+)\]\((https://www\.twitch\.tv/directory/(?:event|category)/[a-z0-9_-]+(?:\?[^)]*)?)\)")
 
+# Fallback: ЛЮБАЯ markdown-ссылка (напр. на официальный сайт офлайн-мероприятия —
+# TwitchCon-бейджи не привязаны ни к категории, ни к каналам, а условие — "купить
+# билет на twitchcon.com"). Картинки (![...](...)) не матчатся — другой синтаксис.
+# Домены-списки участников (не место, куда идти за бейджем) — игнорируем.
+ANY_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\((https://[^)]+)\)")
+IGNORED_LINK_DOMAINS = ("pastebin.com",)
+
 
 def fetch_twitch_link(build_id: str, set_id: str):
     """Авторитетная ссылка Twitch со страницы бейджа StreamDatabase (в contexts[]
@@ -119,23 +126,28 @@ def fetch_twitch_link(build_id: str, set_id: str):
     b = data.get("pageProps", {}).get("twitchGlobalBadge", {})
     for ctx in b.get("contexts") or []:
         for field in ("pending_content", "content"):
-            m = DIR_LINK_RE.search(ctx.get(field) or "")
+            text = ctx.get(field) or ""
+            m = DIR_LINK_RE.search(text)  # приоритет: прямая ссылка на Twitch
             if m:
                 return {"label": m.group(1).strip(), "url": m.group(2)}
+            for m in ANY_LINK_RE.finditer(text):  # fallback: первая полезная ссылка
+                url = m.group(2)
+                if not any(d in url for d in IGNORED_LINK_DOMAINS):
+                    return {"label": m.group(1).strip(), "url": url}
     return None
 
 
 def collect_twitch_links(build_id, events) -> dict:
-    """Для каналовых бейджей (есть channels, нет categories) достаёт ссылку на
-    событие/категорию со страницы бейджа. {set_id: {'label','url'}}."""
+    """Для бейджей БЕЗ категории (каналовые типа EWC, или вовсе без Twitch-привязки
+    типа офлайн-билетов TwitchCon) достаёт ссылку со страницы бейджа StreamDatabase.
+    {set_id: {'label','url'}}."""
     links = {}
     for ev in events:
         for badge in ev.get("twitch_global_badges", []):
             set_id = badge.get("current", {}).get("set_id")
             avs = badge.get("availability") or []
             has_cat = any(av.get("categories") for av in avs)
-            has_chan = any(av.get("channels") for av in avs)
-            if set_id and has_chan and not has_cat and set_id not in links:
+            if set_id and not has_cat and set_id not in links:
                 link = fetch_twitch_link(build_id, set_id)
                 if link:
                     links[set_id] = link
