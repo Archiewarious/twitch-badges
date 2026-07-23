@@ -85,6 +85,8 @@ PUBLISH_INTERVAL = 600   # проверяем базу раз в 10 минут (
 # до старта которых >сутки) — придерживаем до утра, чтобы не будить ночью. Срочное
 # («доступен сейчас», «стартовало», анонс со стартом <сутки) идёт в любое время.
 # START==END → тихие часы выключены.
+UPCOMING_HORIZON_DAYS = 45   # анонсы дальше этого горизонта не показываем
+MAX_GROUPS_PER_TICK = 5      # больше за один тик = аномалия, анонсы стоп + алерт
 QUIET_START = int(os.environ.get("QUIET_HOURS_START", "23"))  # с 23:00 МСК
 QUIET_END = int(os.environ.get("QUIET_HOURS_END", "9"))       # до 09:00 МСК
 # Отдельный рубильник постинга: даже с заданным CHANNEL_ID пост не пойдёт,
@@ -149,7 +151,15 @@ def is_shown(r):
     Сайт-каталог их всё равно показывает (там уместно), скрыто только в боте/канале."""
     if r["status"] not in ("active", "upcoming") or r.get("group") == "__permanent__":
         return False
-    return not (r.get("window") or {}).get("offline_event")
+    w = r.get("window") or {}
+    if w.get("offline_event"):
+        return False
+    # Слишком далёкий анонс — не новость (FFXIV JP стартует через 99 дней).
+    # Появится в боте, когда приблизится. Сайт-каталог горизонт не применяет.
+    if r["status"] == "upcoming" and w.get("start"):
+        if (w["start"] - datetime.now(timezone.utc)).days > UPCOMING_HORIZON_DAYS:
+            return False
+    return True
 
 
 def fmt_dt(dt, with_time=True):
@@ -174,8 +184,11 @@ def window_line(r):
     w = r.get("window") or {}
     s, e = w.get("start"), w.get("end")
     from_page = w.get("from_page")
-    st = (not from_page) or w.get("start_time_known")
-    et = (not from_page) or w.get("end_time_known")
+    # dates_coarse — окно из дат события/каталога, где часы не указаны вовсе
+    # (parse_dt подставил 00:00 → показали бы «03:00 МСК», выдуманная точность).
+    coarse = w.get("dates_coarse")
+    st = (not coarse) and ((not from_page) or w.get("start_time_known"))
+    et = (not coarse) and ((not from_page) or w.get("end_time_known"))
     tail = " (МСК)" if (st or et) else ""
     note = " · точные даты уточняются" if w.get("dates_unconfirmed") else ""
     if s and e:
@@ -237,17 +250,31 @@ def watch_target(r):
 
 def how_short(r):
     """Компактно: как получить + куда идти за значком."""
-    cond = short_cond(r.get("condition")) or "условие не определено"
+    cond = short_cond(r.get("condition"))
     kind, label, url = watch_target(r)
+    grp = r.get("group") or ""
+    grp_tail = f' события «{esc(grp)}»' if grp and grp != "__permanent__" else ""
+
+    if not cond:
+        # Условие SD не публикует (обычно окно взято из дат события/каталога).
+        # Не выдумываем текст — отправляем к первоисточнику.
+        if url:
+            where = {"category": "смотри дропы в категории",
+                     "event": "смотри каналы события",
+                     "channel": "смотри канал",
+                     "external": "подробности —"}[kind]
+            return f'📍 Условия уточняются · {where} <a href="{esc(url)}">{esc(label)}</a>'
+        if (r.get("window") or {}).get("channel_count"):
+            return f"📍 Условия уточняются · у участвующих стримеров{grp_tail}"
+        return "📍 Условия уточняются"
+
     if url:
         prep = {"category": "в категории", "event": "на каналах события",
                 "channel": "у стримера", "external": "—"}[kind]
         return f'📍 {esc(cond)} {prep} <a href="{esc(url)}">{esc(label)}</a>'
     # Каналовый бейдж без курируемой ссылки — просто чёткий текст, без битых ссылок.
     if (r.get("window") or {}).get("channel_count"):
-        grp = r.get("group") or ""
-        tail = f' события «{esc(grp)}»' if grp and grp != "__permanent__" else ""
-        return f"📍 {esc(cond)} — у участвующих стримеров{tail}"
+        return f"📍 {esc(cond)} — у участвующих стримеров{grp_tail}"
     return f"📍 {esc(cond)}"
 
 
@@ -459,7 +486,8 @@ def channel_header(kind, r):
     name = f'<b>{esc(r["title"])}</b>'
     cw = cost_word(r)
     if kind == "appeared_active":
-        return f'🎁 <b>Можно получить уже сейчас!</b>\nНовый {cw} значок {name}'.rstrip()
+        head = f"Новый {cw} значок" if cw else "Новый значок"   # без cw был двойной пробел
+        return f'🎁 <b>Можно получить уже сейчас!</b>\n{head} {name}'
     if kind == "appeared_upcoming":
         head = (cw.capitalize() + " значок") if cw else "Значок"
         return f'📅 <b>Скоро новый значок</b>\n{head} {name}'
@@ -508,54 +536,86 @@ async def post_badge(context, r, kind, now=None):
         return False
 
 
-def album_ending_caption(r, header=False, footer=False):
-    """Компактная подпись под фото в альбоме «последний день»: имя + дедлайн + как.
-    footer=True — приписать ссылки на канал/бота (альбомы Telegram не поддерживают
-    inline-кнопки, поэтому ссылка на канал идёт текстом у последнего фото)."""
-    lines = []
-    if header:
-        lines.append("⏳ <b>Последний день — успей получить!</b>\n")
-    lines.append(f"<b>{esc(r['title'])}</b>")
+CAPTION_LIMIT = 1024     # лимит Telegram на подпись к медиа
+
+
+def plural_badges(n):
+    if n % 10 == 1 and n % 100 != 11:
+        return "значок"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return "значка"
+    return "значков"
+
+
+def album_header(kind, group, n):
+    """Шапка поста-альбома. group — название события (у «последнего дня» его нет:
+    туда попадают разные бейджи, объединённые только датой)."""
+    tail = ""
+    if group:
+        tail = f'\n<b>{esc(group)}</b> — {n} {plural_badges(n)}'
+    if kind == "appeared_active":
+        return f'🎁 <b>Можно получить уже сейчас!</b>{tail}'
+    if kind == "appeared_upcoming":
+        return f'📅 <b>Скоро новые значки</b>{tail}'
+    if kind == "started":
+        return f'▶️ <b>Стартовало — можно получать сейчас!</b>{tail}'
+    return f'⏳ <b>Последний день — успей получить!</b>{tail}'
+
+
+def _meta_sig(r):
+    """Подпись «окно + условие» — чтобы понять, одинаковы ли они у всей группы."""
     w = r.get("window") or {}
-    if w.get("end"):
-        lines.append(f"📅 До {fmt_dt(w['end'])} (МСК)")
-    lines.append(how_short(r))
-    if footer:
-        lines += ["", footer_line()]
-    return "\n".join(lines)
+    return (iso(w.get("start")), iso(w.get("end")), bool(w.get("dates_coarse")),
+            bool(w.get("dates_unconfirmed")), how_short(r))
 
 
-async def post_ending_album(context, ending):
-    """Все бейджи, у которых сегодня последний день — ОДНИМ постом-альбомом
-    (все картинки + инструкции), а не N постов. Chunk по 10 (лимит media group).
-    ending: список (key, r). Возвращает set успешно опубликованных key."""
-    posted = set()
-    for start in range(0, len(ending), 10):
-        chunk = ending[start:start + 10]
-        media = []
-        keys = []
-        for i, (key, r) in enumerate(chunk):
-            url = card_url(r)
-            if not url:
-                continue
-            media.append(InputMediaPhoto(
-                media=url,
-                caption=album_ending_caption(r, header=(i == 0), footer=(i == len(chunk) - 1)),
-                parse_mode=ParseMode.HTML))
-            keys.append(key)
-        if not media:
-            continue
+def album_caption(items, kind, group):
+    """ОДНА подпись на весь альбом: Telegram под медиагруппой показывает только
+    первую, остальные видны лишь при открытии фото — значит весь текст в неё.
+    Если даты и условие у всех совпадают (типичный случай — тиры одного события),
+    пишем их один раз, а бейджи перечисляем именами."""
+    parts = [album_header(kind, group, len(items))]
+    if len({_meta_sig(r) for _, r in items}) == 1:
+        r0 = items[0][1]
+        parts += [window_line(r0), how_short(r0), ""]
+        parts += [f"• {esc(r['title'])}" for _, r in items]
+    else:
+        parts.append("")
+        for _, r in items:
+            parts += [f"<b>{esc(r['title'])}</b>", window_line(r), how_short(r), ""]
+        parts.pop()
+    parts += ["", footer_line()]
+    return "\n".join(parts)
+
+
+async def post_album(context, items, kind, group=None):
+    """N бейджей одним постом-альбомом (все картинки + инструкции), а не N постов.
+    Альбомы Telegram не поддерживают inline-кнопки → ссылки идут текстом.
+    items: список (key, r). Возвращает set успешно опубликованных key."""
+    items = [(k, r) for k, r in items if card_url(r)]
+    posted, i = set(), 0
+    while i < len(items):
+        # жадно набираем чанк: и медиа (≤10), и подпись (≤1024) должны влезть
+        n = min(10, len(items) - i)
+        while n > 1 and len(album_caption(items[i:i + n], kind, group)) > CAPTION_LIMIT:
+            n -= 1
+        chunk, i = items[i:i + n], i + n
+        caption = album_caption(chunk, kind, group)
         try:
-            if len(media) == 1:
+            if len(chunk) == 1:
                 await context.bot.send_photo(
-                    chat_id=CHANNEL_ID, photo=media[0].media,
-                    caption=media[0].caption, parse_mode=ParseMode.HTML)
+                    chat_id=CHANNEL_ID, photo=card_url(chunk[0][1]),
+                    caption=caption, parse_mode=ParseMode.HTML)
             else:
-                await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
-            posted.update(keys)
-            log.info("published ending album of %d -> channel", len(media))
+                await context.bot.send_media_group(chat_id=CHANNEL_ID, media=[
+                    InputMediaPhoto(media=card_url(r),
+                                    caption=caption if j == 0 else None,
+                                    parse_mode=ParseMode.HTML if j == 0 else None)
+                    for j, (_, r) in enumerate(chunk)])
+            posted.update(k for k, _ in chunk)
+            log.info("published album %s x%d -> channel", kind, len(chunk))
         except TelegramError:
-            log.exception("ending album (chunk) в канал упал")
+            log.exception("альбом (%s) в канал упал", kind)
         await asyncio.sleep(2)
     return posted
 
@@ -568,6 +628,16 @@ def in_quiet_hours(now):
     if QUIET_START < QUIET_END:
         return QUIET_START <= h < QUIET_END
     return h >= QUIET_START or h < QUIET_END  # окно через полночь (23→9)
+
+
+def effective_end(w):
+    """Конец окна для триггера «последний день». У грубых дат (день без часа)
+    parse_dt даёт 00:00 — конец означает конец ТОГО дня, иначе «последний день»
+    сработал бы на сутки раньше, когда значок ещё спокойно получают."""
+    e = w.get("end")
+    if e and w.get("dates_coarse"):
+        return e.replace(hour=23, minute=59, second=59)
+    return e
 
 
 def night_hold(kind, r, now):
@@ -624,27 +694,60 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
             st = state[key]
             if r["status"] == "active" and not st.get("started"):
                 announce.append((key, r, "started"))
-            elif (r["status"] == "active" and not st.get("ending") and w.get("end")
-                  and 0 <= (w["end"] - now).total_seconds() <= 86400):
-                ending.append((key, r))
+            else:
+                end = effective_end(w)
+                if (r["status"] == "active" and not st.get("ending") and end
+                        and 0 <= (end - now).total_seconds() <= 86400):
+                    ending.append((key, r))
 
     night = in_quiet_hours(now)
 
-    # ПОЯВЛЕНИЯ/СТАРТЫ: по ОДНОМУ за тик — так они расходятся во времени (интервал =
-    # PUBLISH_INTERVAL, 10 мин), а не валятся пачкой. Разные ивенты = разные посты
-    # естественно. Ночью несрочные анонсы (старт >суток) придерживаем до утра.
+    # ПОЯВЛЕНИЯ/СТАРТЫ: по ОДНОЙ ГРУППЕ за тик — так они расходятся во времени
+    # (интервал = PUBLISH_INTERVAL, 10 мин), а не валятся пачкой. Ночью несрочные
+    # анонсы (старт >суток) придерживаем до утра.
     ready = [item for item in announce if not (night and night_hold(item[2], item[1], now))]
-    if ready:
-        key, r, kind = ready[0]
+
+    # Бейджи одного события (напр. 6 тиров EWC Co-Streamer) — ОДИН пост-альбом,
+    # а не 6 постов подряд. Разные события — разные посты, по одному за тик.
+    buckets = {}
+    for key, r, kind in ready:
+        g = (r.get("window") or {}).get("group") or r.get("group") or ""
+        gk = g if g and g != "__permanent__" else f"\x00solo:{key}"
+        buckets.setdefault((gk, kind), []).append((key, r))
+
+    # Стоп-кран: аномально много новых групп разом = SD что-то переколбасил
+    # (массовое переименование/ре-импорт). Лучше промолчать и спросить владельца,
+    # чем засыпать канал. Тик просто ничего не анонсирует, пока не разберёмся.
+    if len(buckets) > MAX_GROUPS_PER_TICK:
+        log.error("подозрительно много новых групп (%d) — анонсы остановлены", len(buckets))
+        await send_alert("burst", f"{len(buckets)} новых групп значков за один тик",
+                         "Публикация анонсов приостановлена — похоже, StreamDatabase "
+                         "переименовал/переимпортировал события. Проверь данные.")
+        buckets = {}
+
+    for (gk, kind), items in sorted(buckets.items()):
         try:
-            if await post_badge(context, r, kind):
-                if kind == "started":
-                    state[key]["started"] = True
-                else:
-                    state[key] = make_entry(r)
-                save_state(state)
+            if len(items) == 1:
+                key, r = items[0]
+                done = {key} if await post_badge(context, r, kind) else set()
+            else:
+                done = await post_album(context, items, kind,
+                                        None if gk.startswith("\x00solo:") else gk)
         except Exception:
-            log.exception("publish_new: пропускаю анонс %s (%s)", key, kind)
+            # Битая группа не должна навсегда затыкать очередь — пробуем следующую.
+            log.exception("publish_new: пропускаю группу %s (%s)", gk, kind)
+            continue
+        if not done:
+            continue
+        for key, r in items:
+            if key not in done:
+                continue
+            if kind == "started":
+                state[key]["started"] = True
+            else:
+                state[key] = make_entry(r)
+        save_state(state)
+        break   # один пост за тик
 
     # ПОСЛЕДНИЙ ДЕНЬ: все, кто вошёл в 24ч-окно на этом тике — ОДНИМ альбомом.
     # Ночью придерживаем до утра (не срочно — весь день впереди). 24ч-окно шире тихих
@@ -663,7 +766,7 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
             log.exception("publish_new: пропускаю 'последний день' %s", key)
     elif ending:
         # Несколько сразу → альбом (кнопок нет — лимит Telegram, ссылка на канал в тексте).
-        posted = await post_ending_album(context, ending)
+        posted = await post_album(context, ending, "ending")
         if posted:
             for key, r in ending:
                 if key in posted:
@@ -729,9 +832,16 @@ async def check_anomalies(context: ContextTypes.DEFAULT_TYPE):
     issues = []
     for r in records:
         w = r.get("window") or {}
-        if not r.get("condition"):
-            issues.append(f"❓ {r['title']}: неизвестное условие (SD добавил новый тип?)")
-        elif w.get("channel_count") and not w.get("category_href") and not w.get("twitch_link"):
+        _, _, url = watch_target(r)
+        # Будим владельца только если пост получается БЕСПОЛЕЗНЫМ: ни условия, ни
+        # ссылки — читателю некуда идти. Если условия нет, но ссылка есть, пост
+        # честно говорит «условия уточняются · подробности — <ссылка>», и это
+        # штатная ситуация: у SD для части бейджей условия нет в принципе.
+        # Иначе один активный ивент (EWC до 23 августа) слал бы алерт каждые 6ч
+        # весь месяц и обесценил алертинг целиком.
+        if not r.get("condition") and not url:
+            issues.append(f"❓ {r['title']}: ни условия, ни ссылки — пост будет пустым")
+        elif w.get("channel_count") and not url:
             issues.append(f"🔗 {r['title']}: не нашёл ссылку на событие/категорию")
     if issues:
         body = "\n".join(issues[:15])
@@ -740,6 +850,91 @@ async def check_anomalies(context: ContextTypes.DEFAULT_TYPE):
         await send_alert("anomalies", f"{len(issues)} бейдж(ей) требуют внимания", body)
     else:
         await clear_alert("anomalies", "все бейджи распознаны")
+
+
+BLINDSPOT_DAYS = 30      # «недавно добавлен» — окно, в котором молчание подозрительно
+IGNORE_FILE = PROJECT_ROOT / "monitor" / "ignore.txt"
+
+
+def load_ignore():
+    """set_id, о которых владелец больше не хочет слышать (по одному в строке)."""
+    try:
+        return {ln.split("#")[0].strip() for ln in IGNORE_FILE.read_text().splitlines()
+                if ln.split("#")[0].strip()}
+    except OSError:
+        return set()
+
+
+def hidden_reason(r):
+    """Осознанная причина не показывать бейдж. Есть причина — алерт не нужен."""
+    if r is None:
+        return None                      # записи вообще нет — это и есть дыра
+    w = r.get("window") or {}
+    if r.get("group") == "__permanent__":
+        return "постоянный"
+    if w.get("offline_event"):
+        return "офлайн-мероприятие"
+    if w.get("too_late"):
+        return "добавлен уже после окончания"
+    if r["status"] == "upcoming" and w.get("start"):
+        return "анонс за горизонтом"
+    if r["status"] == "ended" and w.get("end"):
+        return "окно закрылось"
+    return None                          # причины нет → не знаем, что с ним делать
+
+
+async def check_blindspots(context: ContextTypes.DEFAULT_TYPE):
+    """СЛЕПАЯ ЗОНА: бейдж уже живёт на Twitch и добавлен недавно, но бот его не
+    показывает — и ни по одной осознанной причине (постоянный / офлайн / поздно /
+    далёкий анонс / окно закрылось). Обычно это значит «у SD нет дат, и мы не знаем,
+    как его классифицировать».
+
+    Именно этой проверки не хватало: check_anomalies перебирает только is_shown(),
+    поэтому невидимый бейдж не мог вызвать алерт в принципе — EWC и La Velada
+    молчали неделями, и никто об этом не узнал."""
+    try:
+        snapshot = json.loads(DATA_FILE.read_text())
+        by_id = {r["set_id"]: r for r in get_records()}
+    except Exception:
+        log.exception("check_blindspots: не смог прочитать данные")
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=BLINDSPOT_DAYS)
+    ignore = load_ignore()
+    issues = []
+    for badge in snapshot.get("badges", []):
+        cur = badge.get("current") or {}
+        sid = cur.get("set_id")
+        if not sid or not badge.get("added") or sid in ignore:
+            continue
+        if sid in site.MANUAL_SET_IDS:          # вручную разобранные категории
+            continue
+        ts = collector._badge_added_at(badge)
+        if not ts:
+            continue
+        try:
+            added = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if added < cutoff:
+            continue
+        r = by_id.get(sid)
+        if r and is_shown(r):
+            continue
+        if hidden_reason(r):
+            continue
+        title = (cur.get("version") or {}).get("title") or sid
+        what = "нет записи в каталоге" if r is None else "нет дат — не знаю, как классифицировать"
+        issues.append(f"❓ {title} ({sid})\n   на Twitch с {added:%d.%m}, в канал не идёт: {what}")
+
+    if issues:
+        body = "\n".join(issues[:10])
+        if len(issues) > 10:
+            body += f"\n…и ещё {len(issues) - 10}"
+        body += (f"\n\nЕсли это нормально — добавь set_id в {IGNORE_FILE}")
+        await send_alert("blindspots", f"{len(issues)} значк(ов) живут на Twitch, но молчат", body)
+    else:
+        await clear_alert("blindspots", "слепых зон нет — все свежие значки разобраны")
 
 
 # ────────────────────────── запуск ──────────────────────────
@@ -765,6 +960,8 @@ def main() -> None:
     # владельца о новом типе условия / нерешённой ссылке события.
     if app.job_queue:
         app.job_queue.run_repeating(check_anomalies, interval=6 * 3600, first=120)
+        # Слепая зона — раз в 3ч: значок живёт на Twitch, а бот молчит и не знает почему.
+        app.job_queue.run_repeating(check_blindspots, interval=3 * 3600, first=180)
 
     if CHANNEL_ID and PUBLISH_ENABLED:
         app.job_queue.run_repeating(publish_new, interval=PUBLISH_INTERVAL, first=30)

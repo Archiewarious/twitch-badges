@@ -260,6 +260,86 @@ PAGE_KIND_RU = {
 }
 
 
+# Бейджи с вручную заданной семантикой (вечные роли, staff, инвайты и т.п.) —
+# для них окна из дат не строим, у них своя классификация.
+MANUAL_SET_IDS = set(PERMANENT) | set(STAFF) | set(INVITE) | set(RETIRED) | set(TECHNICAL) | set(PERIODIC)
+
+
+def _page_too_late(page_info, set_id):
+    return bool((page_info or {}).get(set_id, {}).get("too_late"))
+
+
+def add_event_windows(windows, events, page_info=None, twitch_links=None):
+    """ФОЛБЭК A: даты САМОГО СОБЫТИЯ (events[].start_at_date/end_at_date).
+    У части бейджей availability пуст, но у события даты есть — напр. EWC 2026
+    Co-Streamer идёт 29.06→23.08, а бот его не видел, потому что окна строились
+    только из availability. Не перезаписываем более точные источники."""
+    for ev in events or []:
+        if ev.get("hidden"):
+            continue
+        start = parse_dt(ev.get("start_at_date"), ev.get("start_at_time"))
+        end = parse_dt(ev.get("end_at_date"), ev.get("end_at_time"))
+        if not start and not end:
+            continue
+        grp = group_key(ev.get("title", ""))
+        badges_in_ev = ev.get("twitch_global_badges", [])
+        # Офлайн-мероприятие: если хоть у одного бейджа события стоит twitchcon —
+        # помечаем всю группу (билет, а не Twitch-дроп).
+        offline = bool(re.search(r"twitchcon", ev.get("title", ""), re.I)) or any(
+            av.get("twitchcon") for b in badges_in_ev for av in (b.get("availability") or []))
+        for b in badges_in_ev:
+            set_id = b.get("current", {}).get("set_id")
+            if not set_id or set_id in MANUAL_SET_IDS or windows.get(set_id):
+                continue
+            if _page_too_late(page_info, set_id):     # SD: «окно уже прошло»
+                continue
+            windows[set_id] = [{
+                "event_title": ev.get("title", ""), "group": grp, "game": "",
+                "start": start, "end": end,
+                "cost": ", ".join((b.get("availability") or [{}])[0].get("costs") or []),
+                "condition": None,
+                "id": None, "all_ids": [], "category_href": None, "box_art_url": None,
+                "twitch_link": (twitch_links or {}).get(set_id), "channel_count": 0,
+                "offline_event": offline,
+                # Даты события — только день, без часа: не выдумываем точное время
+                "dates_coarse": True,
+            }]
+    return windows
+
+
+def add_catalog_windows(windows, badges, page_info=None, twitch_links=None):
+    """ФОЛБЭК B: availability из САМОГО КАТАЛОГА (badges[].availability[]).
+    Раньше build_records брал оттуда только condition, а start/end выбрасывал —
+    хотя это 131 бейдж (107 из них вообще не представлены в events.json)."""
+    for b in badges or []:
+        set_id = b.get("current", {}).get("set_id")
+        if not set_id or set_id in MANUAL_SET_IDS or windows.get(set_id):
+            continue
+        if _page_too_late(page_info, set_id):
+            continue
+        for av in b.get("availability") or []:
+            if av.get("hidden"):
+                continue
+            start = parse_dt(av.get("start_at_date"), av.get("start_at_time"))
+            end = parse_dt(av.get("end_at_date"), av.get("end_at_time"))
+            if not start and not end:
+                continue
+            windows[set_id] = [{
+                "event_title": "", "group": None, "game": "",
+                "start": start, "end": end,
+                "cost": ", ".join(av.get("costs") or []),
+                "condition": describe_condition_ru(av),
+                "id": av.get("_id"), "all_ids": [], "category_href": None,
+                "box_art_url": None,
+                "twitch_link": (twitch_links or {}).get(set_id),
+                "channel_count": av.get("channel_count", 0),
+                "offline_event": bool(av.get("twitchcon")),
+                "dates_coarse": not (av.get("start_at_time") or av.get("end_at_time")),
+            }]
+            break
+    return windows
+
+
 def add_page_windows(windows, page_info, badges, twitch_links=None):
     """Достраивает окна для бейджей, которых НЕТ в events.json (у SD там пусто),
     но чьё описание на странице бейджа удалось разобрать (даты + условие).
@@ -315,14 +395,34 @@ def classify(set_id, catalog_badge, windows_by_id, now):
     upcoming = [w for w in windows if w["start"] and now < w["start"]]
     ended = [w for w in windows if w["end"] and now > w["end"]]
 
+    # Открытое окно: начало известно, конца нет (SD часто так для одноразовых
+    # событий — La Velada). Без этого бакета такой бейдж не попадал НИКУДА и в день
+    # старта молча исчезал из бота посреди собственного события.
+    # too_late — SD прямо пишет «бейдж заведён уже после окончания окна»: такой
+    # бейдж получить нельзя, воскрешать его открытым окном нельзя (иначе Dreamers
+    # снова станет «доступен сейчас»).
+    open_now = [w for w in windows
+                if w["start"] and not w["end"] and w["start"] <= now and not w.get("too_late")]
+
     if active:
         w = min(active, key=lambda x: x["end"])
+        return {"status": "active", "window": w, "group": w["group"], "note_kind": None}
+    if open_now:
+        w = max(open_now, key=lambda x: x["start"])
         return {"status": "active", "window": w, "group": w["group"], "note_kind": None}
     if upcoming:
         w = min(upcoming, key=lambda x: x["start"])
         return {"status": "upcoming", "window": w, "group": w["group"], "note_kind": None}
     if ended:
         w = max(ended, key=lambda x: x["end"])
+        return {"status": "ended", "window": w, "group": w["group"], "note_kind": "ended"}
+
+    # Окно есть, но получить уже нельзя (SD: «заведён после окончания»). Окно НЕ
+    # выбрасываем: иначе бейдж выглядит как «есть на Twitch, дат нет, непонятно» и
+    # монитор слепых зон будит владельца каждые 3 часа из-за осознанного решения.
+    too_late = [w for w in windows if w.get("too_late")]
+    if too_late:
+        w = max(too_late, key=lambda x: x["start"] or now)
         return {"status": "ended", "window": w, "group": w["group"], "note_kind": "ended"}
 
     if set_id in PERMANENT:
@@ -415,10 +515,14 @@ def build_records(snapshot):
     now = datetime.now(timezone.utc)
     windows_by_id = collect_windows_by_set_id(
         snapshot.get("events", []), snapshot.get("twitch_links"))
-    # Бейджи вне events.json (свежие анонсы) — окна из разобранного описания страницы
-    windows_by_id = add_page_windows(
-        windows_by_id, snapshot.get("page_info"), snapshot.get("badges", []),
-        snapshot.get("twitch_links"))
+    # Приоритет источников окна (более точный НЕ перезаписывается):
+    #   events[].availability  >  page_info  >  events[].даты  >  badges[].availability
+    page_info = snapshot.get("page_info")
+    links = snapshot.get("twitch_links")
+    badges = snapshot.get("badges", [])
+    windows_by_id = add_page_windows(windows_by_id, page_info, badges, links)
+    windows_by_id = add_event_windows(windows_by_id, snapshot.get("events", []), page_info, links)
+    windows_by_id = add_catalog_windows(windows_by_id, badges, page_info, links)
     raw = []
     for b in snapshot.get("badges", []):
         cur = b.get("current", {})
@@ -513,13 +617,17 @@ def render_group_cards(records, mode, cost):
     def sort_key(item):
         key, items = item
         if key == "__permanent__":
-            return (1, "")
+            return (1, "", "")
         ws = [r["window"] for r in items if r["window"]]
-        if mode == "active" and ws:
-            return (0, min(w["end"] for w in ws))
-        if mode == "upcoming" and ws:
-            return (0, min(w["start"] for w in ws))
-        return (0, key)
+        # Окна из фолбэков могут быть открытыми (start или end = None) — сортируем
+        # по имеющейся дате, безымянные уходят в конец. Кортеж одного типа, иначе
+        # сравнение None с datetime падает.
+        field = "end" if mode == "active" else "start"
+        dates = [w[field] for w in ws if w.get(field)]
+        if dates:
+            return (0, dates[0].strftime("%Y-%m-%dT%H:%M:%S") if len(dates) == 1
+                    else min(dates).strftime("%Y-%m-%dT%H:%M:%S"), "")
+        return (0, "9999", key)
 
     cards = []
     for key, items in sorted(groups.items(), key=sort_key):
@@ -582,8 +690,19 @@ def render_archive_row(r):
 def render_cost_section(records, mode):
     n_free = sum(1 for r in records if r["status"] == mode and r.get("cost") == "free")
     n_paid = sum(1 for r in records if r["status"] == mode and r.get("cost") == "paid")
+    # SD не всегда указывает способ получения (у бейджей, чьё окно взято из дат
+    # события/каталога, availability пуст → cost=None). Раньше такие значки не
+    # попадали НИ в одну колонку и молча пропадали с сайта — отдельный блок ниже.
+    n_unknown = sum(1 for r in records if r["status"] == mode and not r.get("cost"))
     free_html = render_group_cards(records, mode, "free")
     paid_html = render_group_cards(records, mode, "paid")
+    unknown = ""
+    if n_unknown:
+        unknown = f"""
+  <div class="cost-column cost-rest">
+    <div class="cost-column-head cost-unknown"><span class="dot"></span><h3>Способ получения уточняется</h3><span class="count">{n_unknown}</span></div>
+    {render_group_cards(records, mode, None)}
+  </div>"""
     return f"""
   <div class="cost-columns">
     <div class="cost-column">
@@ -594,7 +713,7 @@ def render_cost_section(records, mode):
       <div class="cost-column-head cost-paid"><span class="dot"></span><h3>Платно</h3><span class="count">{n_paid}</span></div>
       {paid_html}
     </div>
-  </div>"""
+  </div>{unknown}"""
 
 
 def build_html(snapshot):
@@ -659,6 +778,9 @@ def build_html(snapshot):
   .cost-column-head.cost-free .dot{{background:var(--free)}}
   .cost-column-head.cost-paid{{color:var(--paid)}}
   .cost-column-head.cost-paid .dot{{background:var(--paid)}}
+  .cost-column-head.cost-unknown{{color:var(--mut)}}
+  .cost-column-head.cost-unknown .dot{{background:var(--mut)}}
+  .cost-rest{{margin-top:22px}}
   .cost-column-head .count{{margin-left:auto;background:var(--panel2);color:var(--mut);font-size:11px;padding:2px 9px;border-radius:999px;text-transform:none;letter-spacing:0;font-weight:600}}
   @media (max-width:760px){{.cost-columns{{flex-direction:column}}}}
 
