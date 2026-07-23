@@ -152,10 +152,12 @@ def is_shown(r):
     return not (r.get("window") or {}).get("offline_event")
 
 
-def fmt_dt(dt):
-    """День+месяц+время в МСК: '25 июля 14:59'."""
+def fmt_dt(dt, with_time=True):
+    """День+месяц+время в МСК: '25 июля 14:59'. with_time=False → только дата
+    (когда источник времени не указал — не выдумываем точность, которой нет)."""
     m = dt + timedelta(hours=3)
-    return f"{m.day} {RU_MONTHS_GEN[m.month - 1]} {m.strftime('%H:%M')}"
+    base = f"{m.day} {RU_MONTHS_GEN[m.month - 1]}"
+    return f"{base} {m.strftime('%H:%M')}" if with_time else base
 
 
 def status_word(r):
@@ -166,15 +168,22 @@ def status_word(r):
 
 
 def window_line(r):
-    """Полное окно с датой и временем (МСК). Неизвестно — так и пишем."""
+    """Полное окно с датой и временем (МСК). Неизвестно — так и пишем.
+    Для окон, разобранных из текста описания (from_page), время показываем только
+    если оно там реально было — иначе 00:00 было бы выдуманной точностью."""
     w = r.get("window") or {}
     s, e = w.get("start"), w.get("end")
+    from_page = w.get("from_page")
+    st = (not from_page) or w.get("start_time_known")
+    et = (not from_page) or w.get("end_time_known")
+    tail = " (МСК)" if (st or et) else ""
+    note = " · точные даты уточняются" if w.get("dates_unconfirmed") else ""
     if s and e:
-        return f"📅 С {fmt_dt(s)} до {fmt_dt(e)} (МСК)"
+        return f"📅 С {fmt_dt(s, st)} до {fmt_dt(e, et)}{tail}{note}"
     if e:
-        return f"📅 До {fmt_dt(e)} (МСК)"
+        return f"📅 До {fmt_dt(e, et)}{tail}{note}"
     if s:
-        return f"📅 С {fmt_dt(s)} (МСК)"
+        return f"📅 С {fmt_dt(s, st)}{tail}{note}"
     return "📅 Даты пока неизвестны"
 
 
@@ -215,6 +224,9 @@ def watch_target(r):
             return ("event", tl.get("label") or "на Twitch", url)
         if "/directory/category/" in url:
             return ("category", tl.get("label") or "на Twitch", url)
+        m = re.match(r"https://(?:www\.)?twitch\.tv/([A-Za-z0-9_]+)/?$", url)
+        if m:                       # канал конкретного стримера (La Velada → ibai)
+            return ("channel", m.group(1), url)
         # Не twitch.tv вообще (напр. официальный сайт офлайн-мероприятия типа
         # TwitchCon) — не приписываем "категория"/"событие", это неверно.
         # Метка со страницы StreamDatabase часто на английском/с опечатками —
@@ -229,7 +241,7 @@ def how_short(r):
     kind, label, url = watch_target(r)
     if url:
         prep = {"category": "в категории", "event": "на каналах события",
-                "external": "—"}[kind]
+                "channel": "у стримера", "external": "—"}[kind]
         return f'📍 {esc(cond)} {prep} <a href="{esc(url)}">{esc(label)}</a>'
     # Каналовый бейдж без курируемой ссылки — просто чёткий текст, без битых ссылок.
     if (r.get("window") or {}).get("channel_count"):

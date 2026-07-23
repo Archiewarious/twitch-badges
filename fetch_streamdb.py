@@ -14,7 +14,7 @@ import re
 import socket
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -113,12 +113,116 @@ DIR_LINK_RE = re.compile(
 # Домены-списки участников (не место, куда идти за бейджем) — игнорируем.
 ANY_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\((https://[^)]+)\)")
 IGNORED_LINK_DOMAINS = ("pastebin.com",)
+# Канал стримера на Twitch (НЕ директория): https://www.twitch.tv/ibai
+CHANNEL_LINK_RE = re.compile(r"https://(?:www\.)?twitch\.tv/([A-Za-z0-9_]+)/?$")
 
 
-def fetch_twitch_link(build_id: str, set_id: str):
-    """Авторитетная ссылка Twitch со страницы бейджа StreamDatabase (в contexts[]
-    .pending_content/.content как markdown-ссылка). Автономно, без ручной курации.
-    Возвращает {'label','url'} или None."""
+# ── Парсер описания со страницы бейджа ────────────────────────────────────────
+# Многие бейджи (особенно свежие: La Velada, Budz, EWC Co-Streamer) НЕ попадают в
+# events.json со структурными данными — там пусто. Но StreamDatabase пишет описание
+# по жёсткому шаблону, который парсится детерминированно (LLM не нужен):
+#   "This badge was awarded on July 15th 2026 (19:51 UTC) to people who watched 60 minutes..."
+#   "This badge was awarded between July 23rd 2026 (X:X UTC) and July 25th 2026 (X:X UTC) to people who subscribed..."
+MONTHS_EN = {m: i for i, m in enumerate(
+    ["January", "February", "March", "April", "May", "June",
+     "July", "August", "September", "October", "November", "December"], 1)}
+
+# "July 25th 2026 (19:51 UTC)" / "July 25th 2026 (X:X UTC)" — время может быть неизвестно
+PAGE_DATE_RE = re.compile(
+    r"(" + "|".join(MONTHS_EN) + r")\s+(\d{1,2})(?:st|nd|rd|th)?\s+(\d{4})"
+    r"(?:\s*\(\s*(\d{1,2}):(\d{2})\s*UTC\s*\))?", re.I)
+
+# SD сам помечает, что даты/часы ещё не подтверждены
+UNCONFIRMED_RE = re.compile(r"AREN'?T\s+YET\s+CONFIRMED", re.I)
+# SD помечает, что бейдж заведён уже ПОСЛЕ окончания окна (получить уже нельзя)
+TOO_LATE_RE = re.compile(r"added\s+after\s+the\s+timeframe", re.I)
+
+
+def _parse_page_dates(text):
+    """Достаёт (start, end) из описания. 'between A and B' → (A, B); 'on A' → (A, None)."""
+    matches = list(PAGE_DATE_RE.finditer(text))
+    if not matches:
+        return None, None, False, False
+
+    def to_dt(m):
+        month, day, year = MONTHS_EN[m.group(1).capitalize()], int(m.group(2)), int(m.group(3))
+        has_time = bool(m.group(4))
+        hh, mm = (int(m.group(4)), int(m.group(5))) if has_time else (0, 0)
+        try:
+            return datetime(year, month, day, hh, mm, tzinfo=timezone.utc), has_time
+        except ValueError:
+            return None, False
+
+    # "between X and Y" — берём первые две даты; иначе одна дата = начало
+    low = text.lower()
+    first, first_t = to_dt(matches[0])
+    if "between" in low[:low.find(matches[0].group(0).lower()) + 40] and len(matches) >= 2:
+        second, second_t = to_dt(matches[1])
+        return first, second, first_t, second_t
+    return first, None, first_t, False
+
+
+def _fix_stale_year(dt, added_iso):
+    """SD иногда копипастит описание с прошлогоднего бейджа (у La Velada VI стоял
+    2025 год, хотя бейдж заведён в 2026). Если дата раньше момента добавления бейджа
+    больше чем на полгода — год явно устаревший, подтягиваем к году добавления."""
+    if not dt or not added_iso:
+        return dt
+    try:
+        added = datetime.fromisoformat(added_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return dt
+    if (added - dt).days > 180:
+        try:
+            fixed = dt.replace(year=added.year)
+        except ValueError:
+            return dt
+        if (added - fixed).days > 180:      # всё ещё в прошлом → следующий год
+            fixed = fixed.replace(year=added.year + 1)
+        return fixed
+    return dt
+
+
+def parse_badge_page_text(text, added_iso=None):
+    """Описание бейджа → структура (даты + признаки). Возвращает None, если дат нет."""
+    if not text:
+        return None
+    start, end, start_time_known, end_time_known = _parse_page_dates(text)
+    if not start:
+        return None
+    start = _fix_stale_year(start, added_iso)
+    end = _fix_stale_year(end, added_iso)
+    if end and end < start:                  # защита от кривого парса
+        end = None
+    low = text.lower()
+    if "watched" in low or "watch " in low:
+        kind = "watch"
+    elif "gifted a subscription" in low or "subscribed" in low:
+        kind = "sub"
+    elif "bought" in low or "ticket" in low:
+        kind = "purchase"
+    elif "cheer" in low or "bits" in low:
+        kind = "bits"
+    else:
+        kind = None
+    m = re.search(r"watched\s+(?:for\s+)?(\d+)\s+minutes", low)
+    return {
+        "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end": end.strftime("%Y-%m-%dT%H:%M:%SZ") if end else None,
+        # Время в описании указано не всегда ("July 25th 2026" без часов, или "(X:X UTC)").
+        # Тогда 00:00 — заглушка, и показывать её как точное время нельзя.
+        "start_time_known": bool(start_time_known),
+        "end_time_known": bool(end_time_known),
+        "kind": kind,
+        "watch_minutes": int(m.group(1)) if m else None,
+        "unconfirmed": bool(UNCONFIRMED_RE.search(text)),
+        "too_late": bool(TOO_LATE_RE.search(text)),
+    }
+
+
+def fetch_badge_page_text(build_id: str, set_id: str):
+    """Текст описания со страницы бейджа StreamDatabase (contexts[].pending_content
+    или .content). Одна загрузка — из неё достаём и ссылку, и даты."""
     try:
         data = fetch_next_data(build_id, f"twitch/global-badges/{set_id}/1")
     except requests.RequestException:
@@ -126,32 +230,89 @@ def fetch_twitch_link(build_id: str, set_id: str):
     b = data.get("pageProps", {}).get("twitchGlobalBadge", {})
     for ctx in b.get("contexts") or []:
         for field in ("pending_content", "content"):
-            text = ctx.get(field) or ""
-            m = DIR_LINK_RE.search(text)  # приоритет: прямая ссылка на Twitch
-            if m:
-                return {"label": m.group(1).strip(), "url": m.group(2)}
-            for m in ANY_LINK_RE.finditer(text):  # fallback: первая полезная ссылка
-                url = m.group(2)
-                if not any(d in url for d in IGNORED_LINK_DOMAINS):
-                    return {"label": m.group(1).strip(), "url": url}
+            if ctx.get(field):
+                return ctx[field]
     return None
 
 
-def collect_twitch_links(build_id, events) -> dict:
-    """Для бейджей БЕЗ категории (каналовые типа EWC, или вовсе без Twitch-привязки
-    типа офлайн-билетов TwitchCon) достаёт ссылку со страницы бейджа StreamDatabase.
-    {set_id: {'label','url'}}."""
-    links = {}
+def extract_link_from_text(text):
+    """Ссылка «куда идти за бейджем» из markdown-описания.
+    Приоритет: директория Twitch → канал стримера на Twitch → внешний сайт.
+    (В описании часто несколько ссылок: у La Velada и сайт события, и канал ibai —
+    смотреть-то надо на Twitch, поэтому канал важнее сайта.)"""
+    if not text:
+        return None
+    m = DIR_LINK_RE.search(text)
+    if m:
+        return {"label": m.group(1).strip(), "url": m.group(2)}
+    fallback = None
+    for m in ANY_LINK_RE.finditer(text):
+        url = m.group(2)
+        if any(d in url for d in IGNORED_LINK_DOMAINS):
+            continue
+        ch = CHANNEL_LINK_RE.match(url)
+        if ch:
+            return {"label": ch.group(1), "url": url}
+        if fallback is None:
+            fallback = {"label": m.group(1).strip(), "url": url}
+    return fallback
+
+
+# Насколько свежие бейджи вне events.json ещё сканируем (ограничивает число запросов)
+PAGE_SCAN_DAYS = 21
+
+
+def _badge_added_at(badge):
+    stamps = [h.get("timestamp") for h in badge.get("history", []) if h.get("type") == "added"]
+    return max(stamps) if stamps else None
+
+
+def collect_badge_pages(build_id, events, badges):
+    """Один проход по страницам бейджей → (ссылки, разобранные описания).
+    Качаем страницу только тем, кому это нужно:
+      1) бейджи без категории в events — ради ссылки на событие/сайт;
+      2) НЕДАВНО ДОБАВЛЕННЫЕ бейджи, которых вообще нет в events со структурными
+         данными (La Velada, Budz и т.п.) — у SD там пусто, и вся информация о
+         датах/условии живёт только в тексте описания. Без этого бот их не видит."""
+    in_events_with_avail = set()
+    need = {}                       # set_id -> added_iso (или None)
     for ev in events:
         for badge in ev.get("twitch_global_badges", []):
-            set_id = badge.get("current", {}).get("set_id")
+            sid = badge.get("current", {}).get("set_id")
+            if not sid:
+                continue
             avs = badge.get("availability") or []
-            has_cat = any(av.get("categories") for av in avs)
-            if set_id and not has_cat and set_id not in links:
-                link = fetch_twitch_link(build_id, set_id)
-                if link:
-                    links[set_id] = link
-    return links
+            if avs:
+                in_events_with_avail.add(sid)
+            if not any(av.get("categories") for av in avs):
+                need.setdefault(sid, None)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=PAGE_SCAN_DAYS)
+    for badge in badges:
+        sid = badge.get("current", {}).get("set_id")
+        if not sid or sid in in_events_with_avail or not badge.get("added"):
+            continue
+        ts = _badge_added_at(badge)
+        if not ts:
+            continue
+        try:
+            if datetime.fromisoformat(ts.replace("Z", "+00:00")) >= cutoff:
+                need[sid] = ts
+        except ValueError:
+            continue
+
+    links, infos = {}, {}
+    for sid, added_iso in need.items():
+        text = fetch_badge_page_text(build_id, sid)
+        if not text:
+            continue
+        link = extract_link_from_text(text)
+        if link:
+            links[sid] = link
+        info = parse_badge_page_text(text, added_iso)
+        if info:
+            infos[sid] = info
+    return links, infos
 
 
 def download_image(url: str) -> bool:
@@ -205,9 +366,10 @@ def main() -> int:
                 f"обвал каталога: {len(badge_list)} бейджей против {prev_count} прежних — "
                 "не пишу incoming (частичный/битый ответ SD)")
 
-    # Ссылки Twitch (событие/категория) для каналовых бейджей — автономно со страниц
-    # (использует av.channels — ДО обрезки ниже).
-    twitch_links = collect_twitch_links(build_id, events)
+    # Один проход по страницам бейджей: ссылки Twitch + разбор описаний (даты/условие
+    # для бейджей, которых нет в events.json — La Velada и т.п.).
+    # Использует av.channels — ДО обрезки ниже.
+    twitch_links, page_info = collect_badge_pages(build_id, events, badge_list)
 
     # Экономия хранения: списки участников (EWC ~1387 стримеров и т.п.) — это ~90%
     # снапшота, а боту/сайту нужен только ФАКТ наличия каналов (детали — логины/аватары —
@@ -225,6 +387,7 @@ def main() -> int:
         "badges": badge_list,
         "events": events,
         "twitch_links": twitch_links,
+        "page_info": page_info,
     }
 
     # Пишем в staging. Картинки качает generate_site.sync_images (только актуальные),
@@ -232,7 +395,8 @@ def main() -> int:
     atomic_write_json(INCOMING_FILE, snapshot)
 
     print(f"OK: {len(badge_list)} бейджей, {len(events)} ивентов, "
-          f"{len(twitch_links)} ссылок событий → {INCOMING_FILE.name} ({snapshot['fetched_at']})")
+          f"{len(twitch_links)} ссылок, {len(page_info)} описаний с датами "
+          f"→ {INCOMING_FILE.name} ({snapshot['fetched_at']})")
     return 0
 
 

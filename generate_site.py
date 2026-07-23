@@ -252,6 +252,63 @@ def collect_windows_by_set_id(events, twitch_links=None):
     return windows
 
 
+# Условие из разобранного описания страницы бейджа (когда структурных данных нет)
+PAGE_KIND_RU = {
+    "sub": "Оформить или подарить подписку",
+    "purchase": "Купить билет",
+    "bits": "Потратить Bits",
+}
+
+
+def add_page_windows(windows, page_info, badges, twitch_links=None):
+    """Достраивает окна для бейджей, которых НЕТ в events.json (у SD там пусто),
+    но чьё описание на странице бейджа удалось разобрать (даты + условие).
+    Без этого свежие анонсы (La Velada VI и т.п.) не видны боту вообще."""
+    if not page_info:
+        return windows
+    titles = {b.get("current", {}).get("set_id"): b.get("current", {}).get("version", {}).get("title")
+              for b in badges}
+    for set_id, info in page_info.items():
+        if windows.get(set_id):          # структурные данные приоритетнее
+            continue
+        start = parse_dt(*(info["start"].split("T")[0], info["start"].split("T")[1][:5])) \
+            if info.get("start") else None
+        end = parse_dt(*(info["end"].split("T")[0], info["end"].split("T")[1][:5])) \
+            if info.get("end") else None
+        if not start:
+            continue
+        if info.get("kind") == "watch":
+            mins = info.get("watch_minutes")
+            condition = f"Смотреть эфир {ru_duration_minutes(mins)}" if mins else "Смотреть эфир"
+        else:
+            condition = PAGE_KIND_RU.get(info.get("kind"))
+        windows[set_id] = [{
+            "event_title": titles.get(set_id) or "",
+            "group": None,
+            "game": "",
+            "start": start,
+            "end": end,
+            "cost": "paid" if info.get("kind") in ("sub", "purchase") else "free",
+            "condition": condition,
+            "id": None,
+            "all_ids": [],
+            "category_href": None,
+            "box_art_url": None,
+            "twitch_link": (twitch_links or {}).get(set_id),
+            "channel_count": 0,
+            "offline_event": info.get("kind") == "purchase",
+            # Данные получены разбором текста, а не структурных полей: SD помечает
+            # часть дат как неподтверждённые, а «too_late» — что окно уже прошло.
+            "from_page": True,
+            "dates_unconfirmed": bool(info.get("unconfirmed")),
+            "too_late": bool(info.get("too_late")),
+            # Время в описании было не всегда — 00:00 может быть заглушкой
+            "start_time_known": bool(info.get("start_time_known")),
+            "end_time_known": bool(info.get("end_time_known")),
+        }]
+    return windows
+
+
 def classify(set_id, catalog_badge, windows_by_id, now):
     windows = windows_by_id.get(set_id, [])
     active = [w for w in windows if w["start"] and w["end"] and w["start"] <= now <= w["end"]]
@@ -358,6 +415,10 @@ def build_records(snapshot):
     now = datetime.now(timezone.utc)
     windows_by_id = collect_windows_by_set_id(
         snapshot.get("events", []), snapshot.get("twitch_links"))
+    # Бейджи вне events.json (свежие анонсы) — окна из разобранного описания страницы
+    windows_by_id = add_page_windows(
+        windows_by_id, snapshot.get("page_info"), snapshot.get("badges", []),
+        snapshot.get("twitch_links"))
     raw = []
     for b in snapshot.get("badges", []):
         cur = b.get("current", {})
