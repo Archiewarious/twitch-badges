@@ -904,6 +904,20 @@ def sync_images(records):
             if key:
                 wanted[key] = r["image"]
 
+    # Fail-close. image_cache_key завязан на путь Twitch CDN (/badges/v1/<uuid>/).
+    # Сменят схему URL — key станет None у ВСЕХ бейджей сразу, wanted опустеет, и
+    # цикл удаления ниже снесёт все картинки, а rsync --delete вычистит их с сайта.
+    # Refresh при этом выйдет с кодом 0, то есть молча, и никакой алерт не сработает.
+    # Гард жёсткий и без порогов: живые бейджи есть, а распознать не удалось НИ
+    # ОДНОГО — это всегда поломка, а не штатное истечение окон.
+    live = [r for r in records
+            if r["status"] in ("active", "upcoming") and r.get("group") != "__permanent__"]
+    if live and not wanted:
+        raise RuntimeError(
+            f"ни у одного из {len(live)} актуальных бейджей не распознан UUID картинки — "
+            "похоже, Twitch сменил схему URL CDN (IMG_UUID_RE в fetch_streamdb.py). "
+            "Картинки НЕ трогаю, чтобы не стереть сайт.")
+
     downloaded = 0
     for key, url in wanted.items():
         if not (IMAGES_DIR / f"{key}.png").exists():

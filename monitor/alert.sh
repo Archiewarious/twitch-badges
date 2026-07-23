@@ -48,9 +48,15 @@ STATE="$STATE_DIR/$KEY"
 now=$(date +%s)
 
 if [ "$MODE" = "clear" ]; then
+  # Сначала ОТПРАВИТЬ, потом стирать. Если сделать наоборот, одна сетевая заминка
+  # в момент восстановления убивает «RECOVERED» навсегда: состояния уже нет,
+  # повторить нечем, нового ALERT не будет — владелец остаётся с висящей тревогой
+  # при работающей системе. Не отправилось — состояние живо, повторим на следующем
+  # тике watchdog (15 мин). На raise-пути ниже порядок такой же.
   if [ -f "$STATE" ]; then
-    rm -f "$STATE"
-    send "✅ RECOVERED: $KEY ${*:-}" || true
+    if send "✅ RECOVERED: $KEY ${*:-}"; then
+      rm -f "$STATE"
+    fi
   fi
   exit 0
 fi
@@ -59,7 +65,12 @@ SUBJECT="${1:?subject required}"; shift || true
 BODY="${*:-}"
 
 if [ -f "$STATE" ]; then
-  last=$(cat "$STATE" 2>/dev/null || echo 0)
+  # Битый/пустой state (обрыв записи, полный диск) не должен превращаться в шторм:
+  # без этого арифметика ниже падает, и «STILL FAILING» уходит каждые 15 минут.
+  last=$(cat "$STATE" 2>/dev/null)
+  case "$last" in
+    ''|*[!0-9]*) last=$(stat -c %Y "$STATE" 2>/dev/null || echo "$now") ;;
+  esac
   age=$(( now - last ))
   if [ "$age" -lt "$RENOTIFY" ]; then
     exit 0                      # уже alerted недавно — молчим (антиспам)

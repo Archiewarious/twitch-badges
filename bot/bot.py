@@ -52,7 +52,7 @@ from telegram import (  # noqa: E402
     Update,
 )
 from telegram.constants import ParseMode  # noqa: E402
-from telegram.error import TelegramError  # noqa: E402
+from telegram.error import NetworkError, TelegramError  # noqa: E402
 from telegram.ext import (  # noqa: E402
     Application,
     ContextTypes,
@@ -79,6 +79,7 @@ DATA_FILE = PROJECT_ROOT / "data" / "streamdb_latest.json"
 IMAGES_DIR = PROJECT_ROOT / "data" / "images"
 CARDS_DIR = PROJECT_ROOT / "data" / "cards"
 PUBLISHED_FILE = PROJECT_ROOT / "data" / "published.json"
+HEARTBEAT_FILE = PROJECT_ROOT / "data" / "bot_alive"
 
 PUBLISH_INTERVAL = 600   # проверяем базу раз в 10 минут (появления постим по одному за тик)
 # Тихие часы (МСК): в этом окне НЕ шлём несрочные посты («последний день» и анонсы,
@@ -103,6 +104,7 @@ PAID_WORDS = {"paid", "платно", "платные", "плат"}
 SOON_WORDS = {"soon", "скоро"}
 
 _cache = {"records": None, "mtime": None}
+_publish_fail_streak = 0   # тиков подряд, когда постить было что, но ничего не ушло
 
 
 # ────────────────────────── данные ──────────────────────────
@@ -715,16 +717,27 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
         gk = g if g and g != "__permanent__" else f"\x00solo:{key}"
         buckets.setdefault((gk, kind), []).append((key, r))
 
-    # Стоп-кран: аномально много новых групп разом = SD что-то переколбасил
-    # (массовое переименование/ре-импорт). Лучше промолчать и спросить владельца,
-    # чем засыпать канал. Тик просто ничего не анонсирует, пока не разберёмся.
+    # Аномально много новых групп разом = SD что-то переколбасил (массовое
+    # переименование/ре-импорт) либо бот долго лежал и очередь накопилась.
+    # Публикацию НЕ замораживаем: очередь и так течёт по одной группе за тик
+    # (максимум 6 постов в час), а заморозка была самоподдерживающейся — ключи не
+    # попадали в published.json, поэтому на следующем тике групп было ровно
+    # столько же, и снятия не наступало никогда. Просто предупреждаем и даём
+    # рычаг остановки прямо в тексте.
     if len(buckets) > MAX_GROUPS_PER_TICK:
-        log.error("подозрительно много новых групп (%d) — анонсы остановлены", len(buckets))
-        await send_alert("burst", f"{len(buckets)} новых групп значков за один тик",
-                         "Публикация анонсов приостановлена — похоже, StreamDatabase "
-                         "переименовал/переимпортировал события. Проверь данные.")
-        buckets = {}
+        names = ", ".join(sorted({gk for gk, _ in buckets if not gk.startswith("\x00solo:")})) or "—"
+        log.warning("много новых групп (%d) — публикую по одной за тик", len(buckets))
+        await send_alert(
+            "burst", f"{len(buckets)} новых групп значков в очереди",
+            f"Группы: {names}\n\n"
+            "Публикую по одной за 10 минут (не залпом). Если это мусор от "
+            "StreamDatabase и постить не надо — останови немедленно:\n"
+            "  sed -i 's/^PUBLISH_ENABLED=true/PUBLISH_ENABLED=false/' "
+            f"{PROJECT_ROOT}/.env && sudo systemctl restart twitch-badges-bot.service")
+    elif buckets:
+        await clear_alert("burst", "очередь анонсов вернулась в норму")
 
+    posted_anything = False
     for (gk, kind), items in sorted(buckets.items()):
         try:
             if len(items) == 1:
@@ -747,6 +760,7 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
             else:
                 state[key] = make_entry(r)
         save_state(state)
+        posted_anything = True
         break   # один пост за тик
 
     # ПОСЛЕДНИЙ ДЕНЬ: все, кто вошёл в 24ч-окно на этом тике — ОДНИМ альбомом.
@@ -762,6 +776,7 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
                 state[key]["ending"] = True
                 state[key]["end"] = iso((r.get("window") or {}).get("end"))
                 save_state(state)
+                posted_anything = True
         except Exception:
             log.exception("publish_new: пропускаю 'последний день' %s", key)
     elif ending:
@@ -773,6 +788,30 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
                     state[key]["ending"] = True
                     state[key]["end"] = iso((r.get("window") or {}).get("end"))
             save_state(state)
+            posted_anything = True
+
+    # КАНАЛ УМЕР? Публикация — единственная нога без страховки: post_badge и
+    # post_album глушат TelegramError и возвращают False, тик заканчивается
+    # «успешно», бот active, данные свежие, диск в порядке — все проверки зелёные,
+    # а канал молчит неделями. Так уже было 21 июля: 9 тиков подряд падали на
+    # «Wrong type of the web page content», и никто об этом не узнал.
+    # Порог в два тика (20 мин), чтобы одиночный сетевой блип не будил зря.
+    global _publish_fail_streak
+    if buckets or ending:
+        if posted_anything:
+            _publish_fail_streak = 0
+            await clear_alert("channel-dead", "публикация в канал снова работает")
+        else:
+            _publish_fail_streak += 1
+            if _publish_fail_streak >= 2:
+                await send_alert(
+                    "channel-dead",
+                    f"не могу опубликовать в канал ({_publish_fail_streak} тика подряд)",
+                    "Было что постить, но ни один пост не ушёл. Обычные причины: бота "
+                    "исключили из канала или сняли право постинга; TELEGRAM_CHANNEL_ID "
+                    "устарел (канал стал супергруппой); Telegram не может забрать "
+                    "картинку с сайта.\n"
+                    "Смотреть: journalctl -u twitch-badges-bot.service -n 50 | grep -i 'канал\\|channel'")
 
     # GC: убрать записи, чьё окно закрылось >7 дней назад
     cutoff = now - timedelta(days=7)
@@ -865,6 +904,28 @@ def load_ignore():
         return set()
 
 
+MONITOR_STATE = PROJECT_ROOT / "data" / "monitor_state.json"
+
+
+def load_monitor_state():
+    """Память мониторов между запусками: о чём уже сообщали. Битый/отсутствующий
+    файл — не повод падать, просто считаем, что не сообщали ни о чём."""
+    try:
+        st = json.loads(MONITOR_STATE.read_text())
+        return st if isinstance(st, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_monitor_state(st):
+    try:
+        tmp = MONITOR_STATE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1))
+        tmp.replace(MONITOR_STATE)
+    except OSError:
+        log.exception("не смог сохранить %s", MONITOR_STATE)
+
+
 def hidden_reason(r):
     """Осознанная причина не показывать бейдж. Есть причина — алерт не нужен."""
     if r is None:
@@ -901,7 +962,7 @@ async def check_blindspots(context: ContextTypes.DEFAULT_TYPE):
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=BLINDSPOT_DAYS)
     ignore = load_ignore()
-    issues = []
+    issues = {}
     for badge in snapshot.get("badges", []):
         cur = badge.get("current") or {}
         sid = cur.get("set_id")
@@ -925,16 +986,46 @@ async def check_blindspots(context: ContextTypes.DEFAULT_TYPE):
             continue
         title = (cur.get("version") or {}).get("title") or sid
         what = "нет записи в каталоге" if r is None else "нет дат — не знаю, как классифицировать"
-        issues.append(f"❓ {title} ({sid})\n   на Twitch с {added:%d.%m}, в канал не идёт: {what}")
+        issues[sid] = f"❓ {title} ({sid})\n   на Twitch с {added:%d.%m}, в канал не идёт: {what}"
 
-    if issues:
-        body = "\n".join(issues[:10])
-        if len(issues) > 10:
-            body += f"\n…и ещё {len(issues) - 10}"
-        body += (f"\n\nЕсли это нормально — добавь set_id в {IGNORE_FILE}")
-        await send_alert("blindspots", f"{len(issues)} значк(ов) живут на Twitch, но молчат", body)
-    else:
+    # Сообщаем про каждый значок ОДИН раз, а не каждые 3 часа все 30 дней подряд.
+    # Иначе один значок, который владелец починить не может (у SD просто нет
+    # данных), даст под сотню одинаковых сообщений и обесценит алертинг целиком —
+    # ровно та мина, что сегодня сработала в check_anomalies.
+    st = load_monitor_state()
+    reported = set(st.get("blindspots", []))
+    fresh = [text for sid, text in issues.items() if sid not in reported]
+
+    if set(issues) != reported:
+        st["blindspots"] = sorted(issues)
+        save_monitor_state(st)
+
+    if fresh:
+        body = "\n".join(fresh[:10])
+        if len(fresh) > 10:
+            body += f"\n…и ещё {len(fresh) - 10}"
+        body += f"\n\nЕсли это нормально — впиши set_id в {IGNORE_FILE}"
+        await send_alert("blindspots", f"{len(fresh)} значк(ов) живут на Twitch, но молчат", body)
+    elif not issues:
         await clear_alert("blindspots", "слепых зон нет — все свежие значки разобраны")
+
+
+async def heartbeat(context: ContextTypes.DEFAULT_TYPE):
+    """Доказательство жизни: бот не просто «active» в systemd, а реально
+    разговаривает с Telegram API. Зависший event loop, дедлок в httpx или снова
+    сломавшийся IPv6 оставляют юнит active; данные при этом обновляет ОТДЕЛЬНЫЙ
+    refresh, диск в порядке — все три проверки watchdog зелёные, а продукт лежит
+    на 100%. Файл трогаем ТОЛЬКО после успешного ответа API, иначе отметка
+    означала бы «джоба вызвалась», а не «сеть жива»."""
+    try:
+        await context.bot.get_me()
+    except Exception:
+        log.warning("heartbeat: Telegram не ответил", exc_info=True)
+        return
+    try:
+        HEARTBEAT_FILE.touch()
+    except OSError:
+        log.exception("heartbeat: не смог обновить %s", HEARTBEAT_FILE)
 
 
 # ────────────────────────── запуск ──────────────────────────
@@ -944,6 +1035,11 @@ async def on_error(update, context):
     логируется с трейсбеком и шлётся владельцу (дедуплено), но бот НЕ падает."""
     err = context.error
     log.error("необработанное исключение в хендлере", exc_info=err)
+    # Обрыв/таймаут сети — рядовое событие на этом хосте, PTB сам ретраит.
+    # Будить владельца ради него нельзя: это шум, который заглушит настоящие
+    # исключения. Настоящая потеря связи всё равно всплывёт через heartbeat.
+    if isinstance(err, NetworkError):
+        return
     await send_alert(
         "bot-exception", "необработанное исключение в боте",
         f"{type(err).__name__}: {str(err)[:300]}\nСмотри: journalctl -u twitch-badges-bot.service -n 50")
@@ -962,6 +1058,9 @@ def main() -> None:
         app.job_queue.run_repeating(check_anomalies, interval=6 * 3600, first=120)
         # Слепая зона — раз в 3ч: значок живёт на Twitch, а бот молчит и не знает почему.
         app.job_queue.run_repeating(check_blindspots, interval=3 * 3600, first=180)
+        # Пульс раз в 5 мин — watchdog по возрасту data/bot_alive отличает
+        # «бот работает» от «юнит active, но бот повис».
+        app.job_queue.run_repeating(heartbeat, interval=300, first=15)
 
     if CHANNEL_ID and PUBLISH_ENABLED:
         app.job_queue.run_repeating(publish_new, interval=PUBLISH_INTERVAL, first=30)

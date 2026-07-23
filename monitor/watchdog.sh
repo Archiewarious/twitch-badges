@@ -31,13 +31,42 @@ if systemctl is-active --quiet twitch-badges-bot.service; then
 else
   st=$(systemctl show twitch-badges-bot.service -p ActiveState -p SubState --value | tr '\n' '/')
   "$ALERT" bot-down "бот НЕ работает ($st)" \
-    "twitch-badges-bot.service не active. journalctl -u twitch-badges-bot.service -n50 ; systemctl reset-failed twitch-badges-bot.service && systemctl start twitch-badges-bot.service"
+    "twitch-badges-bot.service не active.
+Смотреть:  journalctl -u twitch-badges-bot.service -n 50
+Поднять:   sudo systemctl reset-failed twitch-badges-bot.service && sudo systemctl start twitch-badges-bot.service
+(sudo обязателен: юнит системный, root-owned — без него будет 'Interactive authentication required')"
+fi
+
+# (4) Бот РАЗГОВАРИВАЕТ с Telegram? is_active выше этого не показывает: зависший
+#     event loop оставляет юнит active, а данные обновляет отдельный refresh —
+#     все индикаторы зелёные при лежащем продукте. bot_alive трогается только
+#     после успешного ответа API (каждые 5 мин), порог 25 мин = запас в 5 пропусков.
+ALIVE="$PROJ/data/bot_alive"
+ALIVE_MAX=${ALIVE_MAX:-1500}
+if systemctl is-active --quiet twitch-badges-bot.service && [ -f "$ALIVE" ]; then
+  aage=$(( now - $(stat -c %Y "$ALIVE") ))
+  if [ "$aage" -gt "$ALIVE_MAX" ]; then
+    "$ALERT" bot-wedged "бот запущен, но молчит $(( aage/60 )) мин" \
+      "Юнит active, но последний успешный ответ Telegram API был $(( aage/60 )) мин назад (порог $(( ALIVE_MAX/60 )) мин).
+Похоже, бот повис, а не упал — systemd такое не перезапустит.
+Смотреть:   journalctl -u twitch-badges-bot.service -n 50
+Вылечить:   sudo systemctl restart twitch-badges-bot.service"
+  else
+    "$ALERT" --clear bot-wedged "бот отвечает ($(( aage/60 )) мин назад)"
+  fi
 fi
 
 # (3) Диск
 PCT=$(df --output=pcent / | tr -dc '0-9')
 if [ "${PCT:-0}" -ge "${DISK_MAX:-90}" ]; then
-  "$ALERT" disk-full "диск / заполнен ${PCT}%" "порог ${DISK_MAX:-90}%. du -xh --max-depth=1 / | sort -h | tail"
+  # Без sudo du не читает /var/lib/docker и /var/log/journal — то есть подсказка
+  # уводила бы от главных пожирателей места именно на этом хосте.
+  "$ALERT" disk-full "диск / заполнен ${PCT}%" \
+    "порог ${DISK_MAX:-90}%.
+Найти:     sudo du -xh --max-depth=1 / | sort -h | tail -15
+           docker system df ; journalctl --disk-usage
+Освободить: docker system prune -af   (watchtower тянет образы в 03:00)
+           sudo journalctl --vacuum-time=7d"
 else
   "$ALERT" --clear disk-full "диск ${PCT}%"
 fi

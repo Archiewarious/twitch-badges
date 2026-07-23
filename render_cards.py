@@ -168,6 +168,17 @@ def sync_cards(records):
             continue
         wanted.add(key)
         render_card(r, CARDS_DIR / f"{key}.png")
+
+    # Тот же fail-close, что и в sync_images: если UUID не распознался НИ У ОДНОГО
+    # показываемого бейджа, значит сломался разбор URL, а не кончились раздачи.
+    # Без этого удалились бы все карточки, а refresh вышел бы с кодом 0 — молча.
+    shown = [r for r in records if is_shown(r)]
+    if shown and not wanted:
+        raise RuntimeError(
+            f"ни у одного из {len(shown)} показываемых бейджей не распознан UUID картинки — "
+            "похоже, Twitch сменил схему URL CDN (IMG_UUID_RE в fetch_streamdb.py). "
+            "Карточки НЕ трогаю.")
+
     removed = 0
     for f in CARDS_DIR.glob("*.png"):
         if f.stem not in wanted:
