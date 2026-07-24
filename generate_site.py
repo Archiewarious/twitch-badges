@@ -312,6 +312,21 @@ def _norm_alnum(s):
     return re.sub(r"[^a-z0-9]", "", strip_accents(s or "").lower())
 
 
+def _content_ngrams(text, n=4):
+    """Множество склеенных подпоследовательностей слов текста (до n подряд).
+    Матч имени бейджа делаем по этому множеству, а НЕ голой подстрокой: иначе
+    имя цеплялось бы через границы слов — 'Indiana Jones' → 'indianajones'
+    содержит 'diana', и бот опубликовал бы ложный анонс в канал."""
+    words = re.findall(r"[a-z0-9]+", strip_accents(text or "").lower())
+    grams = set()
+    for i in range(len(words)):
+        joined = ""
+        for j in range(i, min(i + n, len(words))):
+            joined += words[j]
+            grams.add(joined)
+    return grams
+
+
 def _condition_from_content(raw):
     """Условие получения из текста события — только по ОДНОЗНАЧНЫМ словам-действиям.
     Это те же примитивы, что describe_condition_ru строит из структурных полей;
@@ -356,23 +371,27 @@ def add_event_content_windows(windows, events, badges, page_info=None, twitch_li
     for ev in events or []:
         if ev.get("hidden"):
             continue
-        content = _norm_alnum(ev.get("content"))
-        if not content:
+        grams = _content_ngrams(ev.get("content"))
+        if not grams:
             continue
         start = parse_dt(ev.get("start_at_date"), ev.get("start_at_time"))
         end = parse_dt(ev.get("end_at_date"), ev.get("end_at_time"))
         if not start and not end:
             continue
         raw = (ev.get("content") or "").lower()
-        # Стоимость берём только по однозначным словам — они не бывают ложными.
-        cost = "paid" if re.search(r"subscri|gift|bits|purchas|\bbuy\b", raw) else None
+        # Стоимость — по однозначным словам, но НЕ метим платным, если рядом сказано
+        # «бесплатно/free» («gifted for free», «no purchase»): иначе ложная пилюля.
+        paid = bool(re.search(r"subscri|gift|bits|purchas|\bbuy\b", raw))
+        free = bool(re.search(r"\bfree\b|no purchase|no cost|бесплатн", raw))
+        cost = "paid" if (paid and not free) else None
         cond = _condition_from_content(raw)
         grp = group_key(ev.get("title", ""))
         offline = bool(re.search(r"twitchcon", ev.get("title", ""), re.I))
         for sid, title, ntitle, nsid in orphans:
             if windows.get(sid):     # уже подхвачен другим событием в этом же проходе
                 continue
-            matched = (len(ntitle) >= 5 and ntitle in content) or (len(nsid) >= 6 and nsid in content)
+            # Совпадение только по ЦЕЛЫМ словам/фразам события (см. _content_ngrams).
+            matched = (len(ntitle) >= 5 and ntitle in grams) or (len(nsid) >= 6 and nsid in grams)
             if not matched:
                 continue
             windows[sid] = [{
@@ -470,11 +489,22 @@ def add_page_windows(windows, page_info, badges, twitch_links=None):
     return windows
 
 
+def effective_end(w):
+    """Конец окна с поправкой на грубые даты. У dates_coarse день указан без часа,
+    parse_dt подставляет 00:00 — но «до 26 июля» значит конец ТОГО дня, а не его
+    начало. Без поправки бейдж считался бы завершённым на сутки раньше, теряя весь
+    последний день. Единый источник правды: тем же пользуется бот в publish_new."""
+    e = w.get("end")
+    if e and w.get("dates_coarse"):
+        return e.replace(hour=23, minute=59, second=59)
+    return e
+
+
 def classify(set_id, catalog_badge, windows_by_id, now):
     windows = windows_by_id.get(set_id, [])
-    active = [w for w in windows if w["start"] and w["end"] and w["start"] <= now <= w["end"]]
+    active = [w for w in windows if w["start"] and w["end"] and w["start"] <= now <= effective_end(w)]
     upcoming = [w for w in windows if w["start"] and now < w["start"]]
-    ended = [w for w in windows if w["end"] and now > w["end"]]
+    ended = [w for w in windows if w["end"] and now > effective_end(w)]
 
     # Открытое окно: начало известно, конца нет (SD часто так для одноразовых
     # событий — La Velada). Без этого бакета такой бейдж не попадал НИКУДА и в день

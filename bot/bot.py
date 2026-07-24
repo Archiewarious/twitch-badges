@@ -632,14 +632,9 @@ def in_quiet_hours(now):
     return h >= QUIET_START or h < QUIET_END  # окно через полночь (23→9)
 
 
-def effective_end(w):
-    """Конец окна для триггера «последний день». У грубых дат (день без часа)
-    parse_dt даёт 00:00 — конец означает конец ТОГО дня, иначе «последний день»
-    сработал бы на сутки раньше, когда значок ещё спокойно получают."""
-    e = w.get("end")
-    if e and w.get("dates_coarse"):
-        return e.replace(hour=23, minute=59, second=59)
-    return e
+# Конец окна с поправкой на грубые даты — единый источник в generate_site,
+# чтобы логика жизненного цикла не разъехалась между сайтом и ботом.
+effective_end = site.effective_end
 
 
 def night_hold(kind, r, now):
