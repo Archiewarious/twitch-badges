@@ -307,6 +307,87 @@ def add_event_windows(windows, events, page_info=None, twitch_links=None):
     return windows
 
 
+def _norm_alnum(s):
+    """Схлопнуть строку в lowercase-алфавитно-цифровую: 'Spider-Man' → 'spiderman'."""
+    return re.sub(r"[^a-z0-9]", "", strip_accents(s or "").lower())
+
+
+def _condition_from_content(raw):
+    """Условие получения из текста события — только по ОДНОЗНАЧНЫМ словам-действиям.
+    Это те же примитивы, что describe_condition_ru строит из структурных полей;
+    здесь их источник — прямой текст SD, а не догадка. Нет явного слова — None
+    (тогда подпись честно скажет «Условия уточняются», не выдумывая)."""
+    parts = []
+    if re.search(r"subscri|gift", raw):
+        parts.append("оформить или подарить подписку")
+    if re.search(r"\bwatch", raw):
+        parts.append("смотреть трансляцию")
+    if re.search(r"bits|cheer", raw):
+        parts.append("потратить Bits")
+    text = " или ".join(parts)
+    return text[0].upper() + text[1:] if text else None
+
+
+def add_event_content_windows(windows, events, badges, page_info=None, twitch_links=None):
+    """ФОЛБЭК A2: событие НАЗЫВАЕТ бейдж в тексте content, но не заполнило
+    структурную связь twitch_global_badges.
+
+    Так было со Spider-Man (24.07.2026): событие «Marvel Tōkon Open Beta» имело
+    даты и content «The Spiderman badge will be available…», но список бейджей
+    события был пуст — бот значок не увидел и прислал алерт «нет дат», хотя у
+    StreamDatabase все данные были. Источник не виноват: SD просто не связал
+    объекты. Здесь связываем сами — по имени бейджа в тексте события.
+
+    Осторожно с ложными совпадениями: сопоставляем ТОЛЬКО бейджи-сироты (без окна
+    из более надёжных источников выше) и требуем достаточно длинное имя, чтобы
+    короткие общие слова не липли к случайной прозе."""
+    orphans = []
+    for b in badges or []:
+        sid = (b.get("current") or {}).get("set_id")
+        if not sid or sid in MANUAL_SET_IDS or windows.get(sid):
+            continue
+        if _page_too_late(page_info, sid):
+            continue
+        title = ((b.get("current") or {}).get("version") or {}).get("title") or ""
+        orphans.append((sid, title, _norm_alnum(title), _norm_alnum(sid)))
+    if not orphans:
+        return windows
+
+    for ev in events or []:
+        if ev.get("hidden"):
+            continue
+        content = _norm_alnum(ev.get("content"))
+        if not content:
+            continue
+        start = parse_dt(ev.get("start_at_date"), ev.get("start_at_time"))
+        end = parse_dt(ev.get("end_at_date"), ev.get("end_at_time"))
+        if not start and not end:
+            continue
+        raw = (ev.get("content") or "").lower()
+        # Стоимость берём только по однозначным словам — они не бывают ложными.
+        cost = "paid" if re.search(r"subscri|gift|bits|purchas|\bbuy\b", raw) else None
+        cond = _condition_from_content(raw)
+        grp = group_key(ev.get("title", ""))
+        offline = bool(re.search(r"twitchcon", ev.get("title", ""), re.I))
+        for sid, title, ntitle, nsid in orphans:
+            if windows.get(sid):     # уже подхвачен другим событием в этом же проходе
+                continue
+            matched = (len(ntitle) >= 5 and ntitle in content) or (len(nsid) >= 6 and nsid in content)
+            if not matched:
+                continue
+            windows[sid] = [{
+                "event_title": ev.get("title", ""), "group": grp, "game": "",
+                "start": start, "end": end,
+                "cost": cost, "condition": cond,
+                "id": None, "all_ids": [], "category_href": None, "box_art_url": None,
+                "twitch_link": (twitch_links or {}).get(sid), "channel_count": 0,
+                "offline_event": offline, "dates_coarse": True,
+                "from_event_content": True,
+            }]
+            print(f"  event-content: «{ev.get('title')}» → {sid} ({title})", file=sys.stderr)
+    return windows
+
+
 def add_catalog_windows(windows, badges, page_info=None, twitch_links=None):
     """ФОЛБЭК B: availability из САМОГО КАТАЛОГА (badges[].availability[]).
     Раньше build_records брал оттуда только condition, а start/end выбрасывал —
@@ -522,6 +603,7 @@ def build_records(snapshot):
     badges = snapshot.get("badges", [])
     windows_by_id = add_page_windows(windows_by_id, page_info, badges, links)
     windows_by_id = add_event_windows(windows_by_id, snapshot.get("events", []), page_info, links)
+    windows_by_id = add_event_content_windows(windows_by_id, snapshot.get("events", []), badges, page_info, links)
     windows_by_id = add_catalog_windows(windows_by_id, badges, page_info, links)
     raw = []
     for b in snapshot.get("badges", []):

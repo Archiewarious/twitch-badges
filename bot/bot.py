@@ -738,7 +738,9 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
         await clear_alert("burst", "очередь анонсов вернулась в норму")
 
     posted_anything = False
+    attempted = False          # реально ли пытались отправить хоть один пост
     for (gk, kind), items in sorted(buckets.items()):
+        attempted = True
         try:
             if len(items) == 1:
                 key, r = items[0]
@@ -771,6 +773,7 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
     elif len(ending) == 1:
         # Один «последний день» → обычный пост с кнопками (▶️ смотреть, 📱 наш канал, 🤖 бот).
         key, r = ending[0]
+        attempted = True
         try:
             if await post_badge(context, r, "ending"):
                 state[key]["ending"] = True
@@ -781,6 +784,7 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
             log.exception("publish_new: пропускаю 'последний день' %s", key)
     elif ending:
         # Несколько сразу → альбом (кнопок нет — лимит Telegram, ссылка на канал в тексте).
+        attempted = True
         posted = await post_album(context, ending, "ending")
         if posted:
             for key, r in ending:
@@ -796,8 +800,13 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
     # а канал молчит неделями. Так уже было 21 июля: 9 тиков подряд падали на
     # «Wrong type of the web page content», и никто об этом не узнал.
     # Порог в два тика (20 мин), чтобы одиночный сетевой блип не будил зря.
+    #
+    # Считаем ТОЛЬКО реальные попытки (attempted), а не «было что постить». Иначе
+    # придержанный ночью «последний день» (ending есть, но публикация отложена до
+    # утра) выглядел как отказ канала — так 24.07 в 03:13 пришла ложная тревога,
+    # снявшаяся ровно в 06:03 UTC, когда тихие часы кончились и бейджи ушли.
     global _publish_fail_streak
-    if buckets or ending:
+    if attempted:
         if posted_anything:
             _publish_fail_streak = 0
             await clear_alert("channel-dead", "публикация в канал снова работает")
