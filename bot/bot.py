@@ -88,6 +88,7 @@ PUBLISH_INTERVAL = 600   # проверяем базу раз в 10 минут (
 # START==END → тихие часы выключены.
 UPCOMING_HORIZON_DAYS = 45   # анонсы дальше этого горизонта не показываем
 MAX_GROUPS_PER_TICK = 5      # больше за один тик = аномалия, анонсы стоп + алерт
+ENDING_WINDOW = 86400        # «последний день» — конец окна ближе этого (24ч)
 QUIET_START = int(os.environ.get("QUIET_HOURS_START", "23"))  # с 23:00 МСК
 QUIET_END = int(os.environ.get("QUIET_HOURS_END", "9"))       # до 09:00 МСК
 # Отдельный рубильник постинга: даже с заданным CHANNEL_ID пост не пойдёт,
@@ -490,6 +491,9 @@ def channel_header(kind, r):
     if kind == "appeared_active":
         head = f"Новый {cw} значок" if cw else "Новый значок"   # без cw был двойной пробел
         return f'🎁 <b>Можно получить уже сейчас!</b>\n{head} {name}'
+    if kind == "active_short":
+        head = f"{cw.capitalize()} значок" if cw else "Значок"
+        return f'⚡ <b>Доступно сейчас — но ненадолго!</b>\n{head} {name}'
     if kind == "appeared_upcoming":
         head = (cw.capitalize() + " значок") if cw else "Значок"
         return f'📅 <b>Скоро новый значок</b>\n{head} {name}'
@@ -557,6 +561,8 @@ def album_header(kind, group, n):
         tail = f'\n<b>{esc(group)}</b> — {n} {plural_badges(n)}'
     if kind == "appeared_active":
         return f'🎁 <b>Можно получить уже сейчас!</b>{tail}'
+    if kind == "active_short":
+        return f'⚡ <b>Доступно сейчас — но ненадолго!</b>{tail}'
     if kind == "appeared_upcoming":
         return f'📅 <b>Скоро новые значки</b>{tail}'
     if kind == "started":
@@ -643,7 +649,7 @@ def night_hold(kind, r, now):
         return True
     if kind == "appeared_upcoming":
         s = (r.get("window") or {}).get("start")
-        return bool(s) and (s - now).total_seconds() > 86400  # до старта >суток
+        return bool(s) and (s - now).total_seconds() > ENDING_WINDOW  # до старта >суток
     return False
 
 
@@ -684,18 +690,24 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
     announce, ending = [], []   # announce: появления + старты (по одному за тик); ending: альбом
     for key, r in live.items():
         w = r.get("window") or {}
+        end = effective_end(w)
+        active = r["status"] == "active"
+        # «Короткий» бейдж: как только он активен, конец УЖЕ в пределах 24ч —
+        # «стартовало» и «последний день» совпали бы во времени. Шлём ОДИН пост
+        # «доступно, но ненадолго» вместо двух почти одинаковых (La Velada: старт и
+        # «последний день» приходили с разницей в часы для суточного окна).
+        short = active and end and 0 <= (end - now).total_seconds() <= ENDING_WINDOW
         if key not in state:
-            kind = "appeared_active" if r["status"] == "active" else "appeared_upcoming"
-            announce.append((key, r, kind))
+            if short:
+                announce.append((key, r, "active_short"))
+            else:
+                announce.append((key, r, "appeared_active" if active else "appeared_upcoming"))
         else:
             st = state[key]
-            if r["status"] == "active" and not st.get("started"):
-                announce.append((key, r, "started"))
-            else:
-                end = effective_end(w)
-                if (r["status"] == "active" and not st.get("ending") and end
-                        and 0 <= (end - now).total_seconds() <= 86400):
-                    ending.append((key, r))
+            if active and not st.get("started"):
+                announce.append((key, r, "active_short" if short else "started"))
+            elif active and not st.get("ending") and short:
+                ending.append((key, r))
 
     night = in_quiet_hours(now)
 
@@ -754,6 +766,13 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
                 continue
             if kind == "started":
                 state[key]["started"] = True
+            elif kind == "active_short":
+                # Один пост закрывает и «стартовало», и «последний день».
+                e = state.get(key) or make_entry(r)
+                e["started"] = True
+                e["ending"] = True
+                e["end"] = iso(effective_end(r.get("window") or {}))
+                state[key] = e
             else:
                 state[key] = make_entry(r)
         save_state(state)
