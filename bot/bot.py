@@ -915,6 +915,12 @@ async def check_anomalies(context: ContextTypes.DEFAULT_TYPE):
 
 
 BLINDSPOT_DAYS = 30      # «недавно добавлен» — окно, в котором молчание подозрительно
+# Нижняя граница: StreamDatabase сначала заводит значок в каталоге, а описание с
+# датами дописывает позже — обычно в пределах часа. Попадём скрейпом в эту щель —
+# данных нет ни у нас, ни у SD, и алертить не о чем: следующий refresh (раз в
+# 30 мин) подхватит сам. Так было с Dead by Daylight Pride Icon 27.07: значок
+# заведён в 20:14, снапшот снят в 20:16, а к 20:43 у SD уже всё было.
+BLINDSPOT_GRACE_HOURS = 3
 IGNORE_FILE = PROJECT_ROOT / "monitor" / "ignore.txt"
 
 
@@ -984,6 +990,7 @@ async def check_blindspots(context: ContextTypes.DEFAULT_TYPE):
         return
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=BLINDSPOT_DAYS)
+    grace = datetime.now(timezone.utc) - timedelta(hours=BLINDSPOT_GRACE_HOURS)
     ignore = load_ignore()
     issues = {}
     for badge in snapshot.get("badges", []):
@@ -1000,8 +1007,8 @@ async def check_blindspots(context: ContextTypes.DEFAULT_TYPE):
             added = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         except ValueError:
             continue
-        if added < cutoff:
-            continue
+        if added < cutoff or added > grace:
+            continue      # слишком старый — или слишком свежий, SD ещё дозаполняет
         r = by_id.get(sid)
         if r and is_shown(r):
             continue
