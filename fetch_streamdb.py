@@ -284,7 +284,16 @@ def collect_badge_pages(build_id, events, badges):
             avs = badge.get("availability") or []
             if avs:
                 in_events_with_avail.add(sid)
-            if not any(av.get("categories") for av in avs):
+            # Страница нужна, если из структурных полей не выходит ни ссылки, ни
+            # условия. categories дают только ИМЯ игры (href у SD там нет), а
+            # собирать URL категории из имени нельзя — Twitch отвечает 200 на любой
+            # слаг, проверить догадку невозможно, и в пост уйдёт битая ссылка.
+            # Флаги условия (subscription/watch/...) SD тоже заполняет не всегда:
+            # у Egg все false, хотя в тексте страницы «subscribed or gifted».
+            has_cond = any(av.get(f) for av in avs
+                           for f in ("subscription", "subscription_gift", "bits",
+                                     "watch", "clip", "twitchcon", "turbo"))
+            if not any(av.get("categories") for av in avs) or not has_cond:
                 need.setdefault(sid, None)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=PAGE_SCAN_DAYS)

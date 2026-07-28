@@ -407,6 +407,36 @@ def add_event_content_windows(windows, events, badges, page_info=None, twitch_li
     return windows
 
 
+def enrich_windows(windows, page_info=None, twitch_links=None):
+    """Победившее окно дополняем тем, чего в нём нет, из остальных источников.
+
+    Цепочка приоритетов выбирает окно целиком: первый источник с датами отдаёт и
+    все прочие поля. Из-за этого более точные ДАТЫ стирали более полное ОПИСАНИЕ —
+    у Egg событие «Egg Hunt 2026» дало точные 29.07 10:00→26.08, но с пустыми
+    флагами условия и без ссылки, и пост выродился в «Условия уточняются» без
+    ссылки, хотя на странице SD было «subscribed or gifted» и ссылка на ROBLOX.
+    Даты не трогаем — только заполняем пустые поля."""
+    page_info = page_info or {}
+    twitch_links = twitch_links or {}
+    for set_id, wins in windows.items():
+        info = page_info.get(set_id) or {}
+        link = twitch_links.get(set_id)
+        for w in wins:
+            if not w.get("condition"):
+                cond = PAGE_KIND_RU.get(info.get("kind"))
+                if cond and info.get("watch_minutes"):
+                    cond = f"Смотреть эфир {ru_duration_minutes(info['watch_minutes'])}"
+                if cond:
+                    w["condition"] = cond
+            if not w.get("twitch_link") and link:
+                w["twitch_link"] = link
+            # costs у события SD тоже бывает пустым — берём из типа со страницы
+            # (тот же вывод, что делает add_page_windows).
+            if not w.get("cost") and info.get("kind"):
+                w["cost"] = "paid" if info["kind"] in ("sub", "purchase") else "free"
+    return windows
+
+
 def add_catalog_windows(windows, badges, page_info=None, twitch_links=None):
     """ФОЛБЭК B: availability из САМОГО КАТАЛОГА (badges[].availability[]).
     Раньше build_records брал оттуда только condition, а start/end выбрасывал —
@@ -635,6 +665,7 @@ def build_records(snapshot):
     windows_by_id = add_event_windows(windows_by_id, snapshot.get("events", []), page_info, links)
     windows_by_id = add_event_content_windows(windows_by_id, snapshot.get("events", []), badges, page_info, links)
     windows_by_id = add_catalog_windows(windows_by_id, badges, page_info, links)
+    windows_by_id = enrich_windows(windows_by_id, page_info, links)
     raw = []
     for b in snapshot.get("badges", []):
         cur = b.get("current", {})
