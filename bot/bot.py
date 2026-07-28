@@ -180,18 +180,39 @@ def status_word(r):
     return "📣 <b>Анонс</b> — ещё нельзя получить"
 
 
+def time_known(w, field):
+    """Знаем ли РЕАЛЬНЫЙ час у края окна. dates_coarse — окно из дат события или
+    каталога, где часов нет вовсе (parse_dt подставил 00:00, показывать нельзя).
+    from_page — разбор текста SD, там час бывает не указан («X:X UTC»)."""
+    if w.get("dates_coarse"):
+        return False
+    if not w.get("from_page"):
+        return True
+    return bool(w.get(f"{field}_time_known"))
+
+
+def window_vague(w):
+    """Окно приблизительное: SD сам пишет «даты не подтверждены» либо не знает
+    часа. Такие анонсы позже уточняются — см. announce-кинд dates_confirmed."""
+    if not w:
+        return False
+    if w.get("dates_unconfirmed"):
+        return True
+    if w.get("start") and not time_known(w, "start"):
+        return True
+    if w.get("end") and not time_known(w, "end"):
+        return True
+    return False
+
+
 def window_line(r):
     """Полное окно с датой и временем (МСК). Неизвестно — так и пишем.
     Для окон, разобранных из текста описания (from_page), время показываем только
     если оно там реально было — иначе 00:00 было бы выдуманной точностью."""
     w = r.get("window") or {}
     s, e = w.get("start"), w.get("end")
-    from_page = w.get("from_page")
-    # dates_coarse — окно из дат события/каталога, где часы не указаны вовсе
-    # (parse_dt подставил 00:00 → показали бы «03:00 МСК», выдуманная точность).
-    coarse = w.get("dates_coarse")
-    st = (not coarse) and ((not from_page) or w.get("start_time_known"))
-    et = (not coarse) and ((not from_page) or w.get("end_time_known"))
+    st = time_known(w, "start")
+    et = time_known(w, "end")
     tail = " (МСК)" if (st or et) else ""
     note = " · точные даты уточняются" if w.get("dates_unconfirmed") else ""
     if s and e:
@@ -463,6 +484,8 @@ def make_entry(r):
         "appeared": True,
         "started": r["status"] == "active",
         "ending": False,
+        # анонс ушёл с приблизительными датами → потом стоит прислать уточнение
+        "dates_vague": window_vague(w),
     }
 
 
@@ -497,6 +520,8 @@ def channel_header(kind, r):
     if kind == "appeared_upcoming":
         head = (cw.capitalize() + " значок") if cw else "Значок"
         return f'📅 <b>Скоро новый значок</b>\n{head} {name}'
+    if kind == "dates_confirmed":
+        return f'⏰ <b>Уточнили время</b>\n{name}'
     if kind == "started":
         return f'▶️ <b>Стартовало — можно получать сейчас!</b>\n{name}'
     if kind == "ending":
@@ -565,6 +590,8 @@ def album_header(kind, group, n):
         return f'⚡ <b>Доступно сейчас — но ненадолго!</b>{tail}'
     if kind == "appeared_upcoming":
         return f'📅 <b>Скоро новые значки</b>{tail}'
+    if kind == "dates_confirmed":
+        return f'⏰ <b>Уточнили время</b>{tail}'
     if kind == "started":
         return f'▶️ <b>Стартовало — можно получать сейчас!</b>{tail}'
     return f'⏳ <b>Последний день — успей получить!</b>{tail}'
@@ -647,6 +674,8 @@ def night_hold(kind, r, now):
     """Придержать ли пост в тихие часы (несрочное). Срочное — всегда сразу."""
     if kind == "ending":
         return True
+    if kind == "dates_confirmed":
+        return True          # уточнение не срочное — подождёт до утра
     if kind == "appeared_upcoming":
         s = (r.get("window") or {}).get("start")
         return bool(s) and (s - now).total_seconds() > ENDING_WINDOW  # до старта >суток
@@ -706,6 +735,16 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
             st = state[key]
             if active and not st.get("started"):
                 announce.append((key, r, "active_short" if short else "started"))
+            elif (r["status"] == "upcoming" and st.get("dates_vague")
+                  and not st.get("dates_confirmed") and not window_vague(w)
+                  and w.get("start")
+                  and (w["start"] - now).total_seconds() > ENDING_WINDOW):
+                # Анонсировали «точные даты уточняются», а SD дозаполнил час —
+                # говорим читателю. Только пока значок ещё не стартовал (после
+                # старта точное окно уходит в посте «стартовало») И пока до старта
+                # больше суток: иначе уточнение и «стартовало» встанут рядом —
+                # это ровно тот дубль, что был у La Velada.
+                announce.append((key, r, "dates_confirmed"))
             elif active and not st.get("ending") and short:
                 ending.append((key, r))
 
@@ -766,6 +805,10 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
                 continue
             if kind == "started":
                 state[key]["started"] = True
+            elif kind == "dates_confirmed":
+                state[key]["dates_confirmed"] = True
+                state[key]["dates_vague"] = False
+                state[key]["end"] = iso(effective_end(r.get("window") or {}))
             elif kind == "active_short":
                 # Один пост закрывает и «стартовало», и «последний день».
                 e = state.get(key) or make_entry(r)
