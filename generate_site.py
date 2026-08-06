@@ -481,6 +481,8 @@ def add_page_windows(windows, page_info, badges, twitch_links=None):
     for set_id, info in page_info.items():
         if windows.get(set_id):          # структурные данные приоритетнее
             continue
+        if not info.get("start"):        # описание без дат — окна из него нет
+            continue
         start = parse_dt(*(info["start"].split("T")[0], info["start"].split("T")[1][:5])) \
             if info.get("start") else None
         end = parse_dt(*(info["end"].split("T")[0], info["end"].split("T")[1][:5])) \
@@ -530,7 +532,10 @@ def effective_end(w):
     return e
 
 
-def classify(set_id, catalog_badge, windows_by_id, now):
+NO_DATE_ANNOUNCE_DAYS = 14   # свежий бейдж без дат ещё считаем новостью
+
+
+def classify(set_id, catalog_badge, windows_by_id, now, page_info=None):
     windows = windows_by_id.get(set_id, [])
     active = [w for w in windows if w["start"] and w["end"] and w["start"] <= now <= effective_end(w)]
     upcoming = [w for w in windows if w["start"] and now < w["start"]]
@@ -587,6 +592,28 @@ def classify(set_id, catalog_badge, windows_by_id, now):
                 "note_kind": "periodic", "manual_note": PERIODIC[set_id]}
     if catalog_badge.get("added") is False:
         return {"status": "ended", "window": None, "group": None, "note_kind": "removed"}
+
+    # Свежий бейдж, дат которого нет НИГДЕ: ни в событиях, ни в каталоге, ни в
+    # тексте страницы — SD выкладывает шаблон с заглушками («August Xth 2026
+    # (X:X UTC)»). Раньше такие падали в «ended/unknown» и бот молчал, хотя это
+    # новость: значок уже висит на Twitch, условие из текста читается, и
+    # конкуренты публикуют их с пометкой «даты неизвестны». Публикуем и мы —
+    # честно, без выдуманных дат. Ограничение по свежести, чтобы не воскресить
+    # весь архив бездатных бейджей.
+    info = (page_info or {}).get(set_id) or {}
+    kind = info.get("kind")
+    if kind and not info.get("too_late"):
+        seen = badge_first_seen(catalog_badge)
+        try:
+            added_dt = datetime.fromisoformat(seen.replace("Z", "+00:00")) if seen else None
+        except ValueError:
+            added_dt = None
+        if added_dt and (now - added_dt).days <= NO_DATE_ANNOUNCE_DAYS:
+            return {"status": "upcoming", "window": None, "group": None,
+                    "note_kind": None,
+                    "manual_note": PAGE_KIND_RU.get(kind),
+                    "manual_cost": "paid" if kind in ("sub", "purchase") else "free"}
+
     return {"status": "ended", "window": None, "group": None, "note_kind": "unknown"}
 
 
@@ -671,7 +698,7 @@ def build_records(snapshot):
         cur = b.get("current", {})
         set_id = cur.get("set_id", "")
         version = cur.get("version", {})
-        cls = classify(set_id, b, windows_by_id, now)
+        cls = classify(set_id, b, windows_by_id, now, page_info)
 
         condition = None
         w = cls.get("window")

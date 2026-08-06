@@ -183,28 +183,46 @@ def _fix_stale_year(dt, added_iso):
     return dt
 
 
+def _page_kind(low):
+    """Тип условия по тексту описания. Порядок веток важен: у co-streamer-текстов
+    встречается и «watched», и «subscription» — «смотреть» считаем первичным."""
+    if "watched" in low or "watch " in low:
+        return "watch"
+    if "gifted a subscription" in low or "subscribed" in low:
+        return "sub"
+    if "bought" in low or "ticket" in low:
+        return "purchase"
+    if "cheer" in low or "bits" in low:
+        return "bits"
+    return None
+
+
 def parse_badge_page_text(text, added_iso=None):
     """Описание бейджа → структура (даты + признаки). Возвращает None, если дат нет."""
     if not text:
         return None
     start, end, start_time_known, end_time_known = _parse_page_dates(text)
+    # Дат может не быть вообще: у свежих кампаний SD выкладывает шаблон с
+    # заглушками («August Xth 2026 (X:X UTC)»). Раньше мы возвращали None и теряли
+    # ВСЁ, включая условие — хотя из текста видно «subscribed or gifted».
+    # Возвращаем структуру без дат: окно из неё не построить, но условие и
+    # стоимость подтянет enrich_windows, и значок можно анонсировать.
     if not start:
-        return None
+        low_ = text.lower()
+        return {
+            "start": None, "end": None,
+            "start_time_known": False, "end_time_known": False,
+            "kind": _page_kind(low_),
+            "watch_minutes": None,
+            "unconfirmed": bool(UNCONFIRMED_RE.search(text)),
+            "too_late": bool(TOO_LATE_RE.search(text)),
+        }
     start = _fix_stale_year(start, added_iso)
     end = _fix_stale_year(end, added_iso)
     if end and end < start:                  # защита от кривого парса
         end = None
     low = text.lower()
-    if "watched" in low or "watch " in low:
-        kind = "watch"
-    elif "gifted a subscription" in low or "subscribed" in low:
-        kind = "sub"
-    elif "bought" in low or "ticket" in low:
-        kind = "purchase"
-    elif "cheer" in low or "bits" in low:
-        kind = "bits"
-    else:
-        kind = None
+    kind = _page_kind(low)
     m = re.search(r"watched\s+(?:for\s+)?(\d+)\s+minutes", low)
     return {
         "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),

@@ -131,7 +131,7 @@ def esc(s):
 # Telegram кэширует inline-картинки по URL. uuid карточки завязан на значок и не
 # меняется при редизайне — поэтому версионируем URL, чтобы после смены дизайна
 # Telegram перезабрал новую карточку. Бампать при каждом изменении вида карточки.
-CARD_VERSION = 8
+CARD_VERSION = 9
 
 
 def card_url(r):
@@ -195,7 +195,7 @@ def window_vague(w):
     """Окно приблизительное: SD сам пишет «даты не подтверждены» либо не знает
     часа. Такие анонсы позже уточняются — см. announce-кинд dates_confirmed."""
     if not w:
-        return False
+        return True          # дат нет вовсе — как появятся, пришлём уточнение
     if w.get("dates_unconfirmed"):
         return True
     if w.get("start") and not time_known(w, "start"):
@@ -760,7 +760,15 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
     buckets = {}
     for key, r, kind in ready:
         g = (r.get("window") or {}).get("group") or r.get("group") or ""
-        gk = g if g and g != "__permanent__" else f"\x00solo:{key}"
+        if g and g != "__permanent__":
+            gk = g
+        elif not r.get("window") and r.get("first_seen"):
+            # У бейджей без дат события нет вообще, поэтому группы тоже нет. Но
+            # SD заводит их пачками (3 значка Audible пришли одним пакетом) —
+            # шлём одним альбомом по дню появления, а не тремя постами подряд.
+            gk = f"\x00nodate:{r['first_seen'][:10]}"
+        else:
+            gk = f"\x00solo:{key}"
         buckets.setdefault((gk, kind), []).append((key, r))
 
     # Аномально много новых групп разом = SD что-то переколбасил (массовое
@@ -792,8 +800,10 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
                 key, r = items[0]
                 done = {key} if await post_badge(context, r, kind) else set()
             else:
+                # \x00… — синтетические ключи (одиночка / бездатная пачка),
+                # это не название события и в шапку поста не идёт.
                 done = await post_album(context, items, kind,
-                                        None if gk.startswith("\x00solo:") else gk)
+                                        None if gk.startswith("\x00") else gk)
         except Exception:
             # Битая группа не должна навсегда затыкать очередь — пробуем следующую.
             log.exception("publish_new: пропускаю группу %s (%s)", gk, kind)
