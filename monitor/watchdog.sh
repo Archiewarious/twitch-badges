@@ -63,10 +63,16 @@ if [ "${PCT:-0}" -ge "${DISK_MAX:-90}" ]; then
   # уводила бы от главных пожирателей места именно на этом хосте.
   "$ALERT" disk-full "диск / заполнен ${PCT}%" \
     "порог ${DISK_MAX:-90}%.
-Найти:     sudo du -xh --max-depth=1 / | sort -h | tail -15
-           docker system df ; journalctl --disk-usage
-Освободить: docker system prune -af   (watchtower тянет образы в 03:00)
-           sudo journalctl --vacuum-time=7d"
+Найти:      sudo du -xh --max-depth=1 / | sort -h | tail -15
+            docker system df ; journalctl --disk-usage
+Освободить (безопасно):
+            docker builder prune -f        # кэш сборки, обычно самый жирный
+            docker image prune -f          # только висячие слои
+            sudo journalctl --vacuum-size=200M ; sudo apt-get clean
+
+НЕ запускать 'docker system prune -a': снесёт локально собранные образы
+— их нет ни в одном
+реестре, восстановить можно только пересборкой."
 else
   "$ALERT" --clear disk-full "диск ${PCT}%"
 fi
