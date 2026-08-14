@@ -535,7 +535,7 @@ def effective_end(w):
 NO_DATE_ANNOUNCE_DAYS = 14   # свежий бейдж без дат ещё считаем новостью
 
 
-def classify(set_id, catalog_badge, windows_by_id, now, page_info=None):
+def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_links=None):
     windows = windows_by_id.get(set_id, [])
     active = [w for w in windows if w["start"] and w["end"] and w["start"] <= now <= effective_end(w)]
     upcoming = [w for w in windows if w["start"] and now < w["start"]]
@@ -609,10 +609,27 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None):
         except ValueError:
             added_dt = None
         if added_dt and (now - added_dt).days <= NO_DATE_ANNOUNCE_DAYS:
-            return {"status": "upcoming", "window": None, "group": None,
-                    "note_kind": None,
-                    "manual_note": PAGE_KIND_RU.get(kind),
-                    "manual_cost": "paid" if kind in ("sub", "purchase") else "free"}
+            # Условие — тем же способом, что и add_page_windows (watch-минуты, если
+            # известны), а не голым PAGE_KIND_RU: для kind="watch" тот словарь пуст
+            # и раньше отдавал None вместо «Смотреть эфир». Ссылку берём из
+            # twitch_links напрямую — дат тут нет вообще, поэтому её никогда не
+            # доносит ни один построитель окна (все требуют start).
+            if kind == "watch":
+                mins = info.get("watch_minutes")
+                condition = f"Смотреть эфир {ru_duration_minutes(mins)}" if mins else "Смотреть эфир"
+            else:
+                condition = PAGE_KIND_RU.get(kind)
+            window = {
+                "event_title": "", "group": None, "game": "",
+                "start": None, "end": None,
+                "cost": "paid" if kind in ("sub", "purchase") else "free",
+                "condition": condition,
+                "id": None, "all_ids": [], "category_href": None, "box_art_url": None,
+                "twitch_link": (twitch_links or {}).get(set_id), "channel_count": 0,
+                "offline_event": kind == "purchase", "dates_coarse": True,
+            }
+            return {"status": "upcoming", "window": window, "group": None,
+                    "note_kind": None}
 
     return {"status": "ended", "window": None, "group": None, "note_kind": "unknown"}
 
@@ -698,7 +715,7 @@ def build_records(snapshot):
         cur = b.get("current", {})
         set_id = cur.get("set_id", "")
         version = cur.get("version", {})
-        cls = classify(set_id, b, windows_by_id, now, page_info)
+        cls = classify(set_id, b, windows_by_id, now, page_info, links)
 
         condition = None
         w = cls.get("window")
