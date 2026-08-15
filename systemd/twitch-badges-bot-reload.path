@@ -1,0 +1,15 @@
+[Unit]
+Description=Watch twitch-badges-bot source for changes
+
+[Path]
+# Единственные модули, которые долгоживущий процесс бота держит в памяти
+# (bot/bot.py импортирует generate_site.py и fetch_streamdb.py из корня репо).
+# PathChanged, а не PathModified: срабатывает один раз на завершённую запись
+# (close-after-write), а не на каждый inotify IN_MODIFY во время правки.
+PathChanged=/home/archie/projects/twitch-badges/bot/bot.py
+PathChanged=/home/archie/projects/twitch-badges/generate_site.py
+PathChanged=/home/archie/projects/twitch-badges/fetch_streamdb.py
+Unit=twitch-badges-bot-reload.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Restart twitch-badges-bot.service after a source change
+# Раньше правка generate_site.py/fetch_streamdb.py применялась только к следующему
+# ручному restart бота — процесс держит модуль в памяти, Python его не перечитывает
+# сам. 8ce7d92 чинил алерт «нет условия/ссылки», но бот тихо продолжал слать его
+# ещё сутки со старым кодом, пока не вспомнили перезапустить руками.
+
+[Service]
+Type=oneshot
+# try-restart, не restart: если бот намеренно остановлен (обслуживание), правка
+# исходников не должна сама его поднимать.
+ExecStart=/usr/bin/systemctl try-restart twitch-badges-bot.service
