@@ -307,10 +307,25 @@ def footer_line():
             f'<a href="https://t.me/{BOT_USERNAME}">@{BOT_USERNAME}</a> в любом чате')
 
 
+def art_disclaimer(r):
+    """Для кампаний, анонсированных до появления самого значка, на карточке стоит
+    арт прошлогоднего выпуска (см. add_orphan_event_records). Молчать об этом
+    нельзя: читатель примет заглушку за финальный дизайн."""
+    prev = r.get("art_placeholder_from")
+    if not prev:
+        return None
+    year = prev.rsplit("-", 1)[-1]
+    return f"🖼 На картинке — значок {year} года: финальный арт Twitch ещё не показал"
+
+
 def build_caption(top_lines, r):
     """Подпись: верхние строки (заголовок/статус/окно) → как получить → футер."""
     parts = [ln for ln in top_lines if ln]
-    parts += ["", how_short(r), "", footer_line()]
+    parts += ["", how_short(r)]
+    note = art_disclaimer(r)
+    if note:
+        parts += ["", note]
+    parts += ["", footer_line()]
     return "\n".join(parts)
 
 

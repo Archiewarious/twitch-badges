@@ -696,6 +696,121 @@ def aggregate_family(members):
     }
 
 
+def event_slug(title):
+    """Заголовок события → слаг, каким SD обычно называет его set_id:
+    «SUBtember 2026» → «subtember-2026» (ср. реальные subtember-2024/2025)."""
+    s = re.sub(r"[^a-z0-9]+", "-", strip_accents(title or "").lower())
+    return s.strip("-")
+
+
+def _previous_year_art(slug, badges):
+    """Арт прошлогоднего выпуска той же серии: для «subtember-2026» ищем
+    «subtember-YYYY» с максимальным годом меньше текущего. Нужен как заглушка,
+    пока Twitch не выложил финальный значок — пост без картинки бот не отправит
+    (см. post_badge)."""
+    m = re.match(r"^(.*)-(\d{4})$", slug)
+    if not m:
+        return None, None
+    family, year = m.group(1), int(m.group(2))
+    best = None
+    for b in badges or []:
+        sid = (b.get("current") or {}).get("set_id") or ""
+        mm = re.match(rf"^{re.escape(family)}-(\d{{4}})$", sid)
+        if mm and int(mm.group(1)) < year:
+            if best is None or int(mm.group(1)) > best[0]:
+                best = (int(mm.group(1)), b)
+    if not best:
+        return None, None
+    url = ((best[1].get("current") or {}).get("version") or {}).get("image_url_4x") or ""
+    return (url or None), f"{family}-{best[0]}"
+
+
+def add_orphan_event_records(records, snapshot, now):
+    """ФОЛБЭК C: событие с датами, у которого НЕТ НИ ОДНОГО бейджа — ни привязанного
+    (twitch_global_badges пуст), ни своего в каталоге.
+
+    Так было с SUBtember 2026 (19.08.2026): у SD есть событие с точным окном
+    28.08 18:00 → 01.10 18:00 UTC и текстом «badge will be available for
+    subscribing, gifting, or using Bits», но объекта бейджа ещё нет вообще.
+    Весь остальной пайплайн бейдж-центричный (build_records идёт по badges), а
+    add_event_content_windows умеет цеплять событие только к УЖЕ существующему
+    бейджу-сироте — поэтому кампания не попадала никуда, и канал молчал, пока
+    конкуренты анонс уже опубликовали.
+
+    set_id берём как слаг заголовка: у SD серии называются предсказуемо
+    (subtember-2024/2025 → subtember-2026), а dedup бота завязан ровно на set_id —
+    значит, когда настоящий бейдж появится, он схлопнется с этой записью и второго
+    поста не будет. Если SD назовёт его иначе, повтор всё же возможен: страхуемся
+    тем, что синтетическую запись выключает любой бейдж с таким же заголовком."""
+    badges = snapshot.get("badges") or []
+    known_ids = {(b.get("current") or {}).get("set_id") for b in badges}
+    known_titles = {
+        _norm_alnum(((b.get("current") or {}).get("version") or {}).get("title"))
+        for b in badges
+    }
+    out = []
+    for ev in snapshot.get("events") or []:
+        if ev.get("hidden") or ev.get("twitch_global_badges"):
+            continue
+        title = (ev.get("title") or "").strip()
+        content = (ev.get("content") or "")
+        if not title or not re.search(r"badge|значок", content, re.I):
+            continue
+        slug = event_slug(title)
+        if not slug or slug in known_ids or _norm_alnum(title) in known_titles:
+            continue
+        # Офлайн-мероприятие — билет, а не Twitch-дроп (ср. is_shown в боте).
+        if re.search(r"twitchcon", title, re.I):
+            continue
+        start = parse_dt(ev.get("start_at_date"), ev.get("start_at_time"))
+        end = parse_dt(ev.get("end_at_date"), ev.get("end_at_time"))
+        if not start and not end:
+            continue
+        raw = content.lower()
+        paid = bool(re.search(r"subscri|gift|bits|purchas|\bbuy\b", raw))
+        free = bool(re.search(r"\bfree\b|no purchase|no cost|бесплатн", raw))
+        window = {
+            "event_title": title, "group": group_key(title), "game": "",
+            "start": start, "end": end,
+            "cost": "paid" if (paid and not free) else ("free" if free else None),
+            "condition": _condition_from_content(raw),
+            "id": None, "all_ids": [], "category_href": None, "box_art_url": None,
+            "twitch_link": (snapshot.get("twitch_links") or {}).get(slug),
+            "channel_count": 0, "offline_event": False,
+            # Часы у события есть — грубыми даты помечаем, только если их не дали.
+            "dates_coarse": not (ev.get("start_at_time") or ev.get("end_at_time")),
+            "from_orphan_event": True,
+        }
+        if start and end and start <= now <= effective_end(window):
+            status = "active"
+        elif start and now < start:
+            status = "upcoming"
+        else:
+            continue          # уже прошло — воскрешать нечего
+        art, art_from = _previous_year_art(slug, badges)
+        if not art:
+            continue          # без картинки бот всё равно не опубликует
+        out.append({
+            "set_id": slug,
+            "title": title,
+            "image": art,
+            "holders": None,
+            "version_count": 1,
+            "first_seen": None,
+            "status": status,
+            "group": window["group"],
+            "window": window,
+            "condition": window["condition"],
+            "note_kind": None,
+            "cost": window["cost"],
+            # Картинка — прошлогодняя заглушка. Бот обязан сказать это в подписи,
+            # иначе читатель примет её за финальный арт 2026-го.
+            "art_placeholder_from": art_from,
+        })
+        print(f"  orphan-event: «{title}» → {slug} (арт от {art_from})", file=sys.stderr)
+    return records + out
+
+
 def build_records(snapshot):
     now = datetime.now(timezone.utc)
     windows_by_id = collect_windows_by_set_id(
@@ -749,7 +864,8 @@ def build_records(snapshot):
     by_set = {}
     for rec in raw:
         by_set.setdefault(rec["set_id"], []).append(rec)
-    return [aggregate_family(members) for members in by_set.values()]
+    records = [aggregate_family(members) for members in by_set.values()]
+    return add_orphan_event_records(records, snapshot, now)
 
 
 COST_LABEL = {"paid": "платно", "free": "бесплатно"}
