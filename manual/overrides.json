@@ -23,31 +23,31 @@
     "condition": "Смотреть 20 минут в 3 разных дня",
     "cost": "free",
     "start": "2026-08-17",
-    "end": null,
-    "source": "официальная схема Twitch (бесплатная ветка) + описание значка в Twitch API"
+    "end": "2026-10-01",
+    "source": "официальная схема Twitch (бесплатная ветка) + описание значка в Twitch API; конец окна — событие SD «Evolution badges...»: значки нужно открыть до 1 октября"
   },
   "bulbasaur": {
     "group": "Pokémon First Partners Collection",
     "condition": "Оформить или подарить подписку, затем смотреть 20 минут в 3 разных дня",
     "cost": "paid",
     "start": "2026-08-17",
-    "end": null,
-    "source": "официальная схема Twitch (ветка Sub → Mystery Container)"
+    "end": "2026-10-01",
+    "source": "официальная схема Twitch (ветка Sub → Mystery Container); конец окна — событие SD «Evolution badges...»: значки нужно открыть до 1 октября"
   },
   "charmander": {
     "group": "Pokémon First Partners Collection",
     "condition": "Оформить или подарить подписку, затем смотреть 20 минут в 3 разных дня",
     "cost": "paid",
     "start": "2026-08-17",
-    "end": null,
-    "source": "официальная схема Twitch (ветка Sub → Mystery Container)"
+    "end": "2026-10-01",
+    "source": "официальная схема Twitch (ветка Sub → Mystery Container); конец окна — событие SD «Evolution badges...»: значки нужно открыть до 1 октября"
   },
   "squirtle": {
     "group": "Pokémon First Partners Collection",
     "condition": "Оформить или подарить подписку, затем смотреть 20 минут в 3 разных дня",
     "cost": "paid",
     "start": "2026-08-17",
-    "end": null,
-    "source": "официальная схема Twitch (ветка Sub → Mystery Container)"
+    "end": "2026-10-01",
+    "source": "официальная схема Twitch (ветка Sub → Mystery Container); конец окна — событие SD «Evolution badges...»: значки нужно открыть до 1 октября"
   }
 }
