@@ -24,6 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
+OVERRIDES_FILE = ROOT / "manual" / "overrides.json"  # ручные дополнения, когда SD молчит
 IMAGES_DIR = DATA_DIR / "images"
 INCOMING_FILE = DATA_DIR / "streamdb_incoming.json"  # свежий staging (пишет fetch_streamdb)
 LATEST_FILE = DATA_DIR / "streamdb_latest.json"      # закоммиченный (читает бот)
@@ -696,6 +697,75 @@ def aggregate_family(members):
     }
 
 
+def load_overrides():
+    """Ручные дополнения из manual/overrides.json (см. _readme внутри файла).
+    Битый JSON НЕ роняет refresh молча: печатаем в stderr и работаем без него —
+    потерять ручное описание не так страшно, как остановить весь пайплайн."""
+    try:
+        data = json.loads(OVERRIDES_FILE.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        print(f"ВНИМАНИЕ: manual/overrides.json не прочитан ({e}) — работаю без него",
+              file=sys.stderr)
+        return {}
+    return {k: v for k, v in data.items()
+            if not k.startswith("_") and isinstance(v, dict)}
+
+
+def apply_manual_overrides(windows, overrides):
+    """Накладывает ручные данные ПОВЕРХ всех автоматических источников.
+
+    Нужно там, где SD не просто «не связал объекты», а честно не знает ответа:
+    у покемонов (Bulbasaur/Charmander/Pichu/Squirtle, 17.08.2026) страница значка
+    отдаёт «We don't yet know if this badge is earned by subscribing or watching»,
+    availability пуст, дат нет нигде — а кампания при этом уже идёт, и условия
+    опубликованы Twitch отдельной схемой. Никакой фолбэк такого не выведет,
+    поэтому единственный источник правды здесь — человек.
+
+    Приоритет наивысший: перекрываем даже структурные поля SD."""
+    for set_id, ov in (overrides or {}).items():
+        w = (windows.get(set_id) or [None])[0]
+        if w is None:
+            w = {
+                "event_title": "", "group": None, "game": "", "start": None, "end": None,
+                "cost": None, "condition": None, "id": None, "all_ids": [],
+                "category_href": None, "box_art_url": None, "twitch_link": None,
+                "channel_count": 0, "offline_event": False,
+            }
+            windows[set_id] = [w]
+        if ov.get("group"):
+            w["group"] = ov["group"]
+            w["event_title"] = ov["group"]
+        for field in ("condition", "cost"):
+            if ov.get(field):
+                w[field] = ov[field]
+        if ov.get("link"):
+            w["twitch_link"] = ov["link"]
+        # Даты: пишем, даже если значение None — «end: null» это осознанное
+        # «конец неизвестен» (открытое окно), а не отсутствие мнения.
+        # Дата без 'T<час>' — значит, часа мы не знаем: помечаем окно грубым, иначе
+        # parse_dt подставит 00:00 и бот покажет выдуманную точность до минуты.
+        coarse = False
+        for field in ("start", "end"):
+            if field not in ov:
+                continue
+            val = ov.get(field)
+            if not val:
+                w[field] = None
+                continue
+            date_s, _, time_s = val.partition("T")
+            w[field] = parse_dt(date_s, time_s)
+            if not time_s:
+                coarse = True
+        if coarse:
+            w["dates_coarse"] = True
+        w["from_manual"] = True
+        # Ручное окно не должно глохнуть о «SD сказал, что уже поздно».
+        w.pop("too_late", None)
+    return windows
+
+
 def event_slug(title):
     """Заголовок события → слаг, каким SD обычно называет его set_id:
     «SUBtember 2026» → «subtember-2026» (ср. реальные subtember-2024/2025)."""
@@ -825,6 +895,8 @@ def build_records(snapshot):
     windows_by_id = add_event_content_windows(windows_by_id, snapshot.get("events", []), badges, page_info, links)
     windows_by_id = add_catalog_windows(windows_by_id, badges, page_info, links)
     windows_by_id = enrich_windows(windows_by_id, page_info, links)
+    # Человек — последний и главный источник: перекрывает всё, что выведено выше.
+    windows_by_id = apply_manual_overrides(windows_by_id, load_overrides())
     raw = []
     for b in snapshot.get("badges", []):
         cur = b.get("current", {})

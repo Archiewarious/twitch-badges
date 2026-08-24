@@ -1,0 +1,53 @@
+{
+  "_readme": [
+    "Ручные дополнения к данным StreamDatabase — на случай, когда кампания уже идёт,",
+    "а SD ещё ничего не знает (его страница значка прямо пишет «We don't yet know if",
+    "this badge is earned by subscribing or watching»). Тогда бот молчит, хотя",
+    "конкуренты уже опубликовали анонс, взяв условия с официальной схемы Twitch.",
+    "",
+    "Поля перекрывают окно значка и имеют наивысший приоритет — человек знает лучше",
+    "любого фолбэка. Любое поле необязательно; чего нет, то берётся из SD как обычно.",
+    "  group     — название кампании (объединяет значки в один пост-альбом)",
+    "  condition — как получить, одной строкой",
+    "  cost      — free | paid",
+    "  start/end — ISO 'YYYY-MM-DDTHH:MM' в UTC; end=null → окно открыто (конец неизвестен)",
+    "  link      — {label, url}, кнопка «Смотреть»",
+    "  source    — откуда факты; для себя, в пост не идёт",
+    "",
+    "Значок исчезает отсюда сам собой, когда SD дозаполнит данные: достаточно удалить",
+    "запись. Правка файла подхватывается автоматически (twitch-badges-bot-reload.path).",
+    "Ключи, начинающиеся с '_', игнорируются."
+  ],
+  "pichu": {
+    "group": "Pokémon First Partners Collection",
+    "condition": "Смотреть 20 минут в 3 разных дня",
+    "cost": "free",
+    "start": "2026-08-17",
+    "end": null,
+    "source": "официальная схема Twitch (бесплатная ветка) + описание значка в Twitch API"
+  },
+  "bulbasaur": {
+    "group": "Pokémon First Partners Collection",
+    "condition": "Оформить или подарить подписку, затем смотреть 20 минут в 3 разных дня",
+    "cost": "paid",
+    "start": "2026-08-17",
+    "end": null,
+    "source": "официальная схема Twitch (ветка Sub → Mystery Container)"
+  },
+  "charmander": {
+    "group": "Pokémon First Partners Collection",
+    "condition": "Оформить или подарить подписку, затем смотреть 20 минут в 3 разных дня",
+    "cost": "paid",
+    "start": "2026-08-17",
+    "end": null,
+    "source": "официальная схема Twitch (ветка Sub → Mystery Container)"
+  },
+  "squirtle": {
+    "group": "Pokémon First Partners Collection",
+    "condition": "Оформить или подарить подписку, затем смотреть 20 минут в 3 разных дня",
+    "cost": "paid",
+    "start": "2026-08-17",
+    "end": null,
+    "source": "официальная схема Twitch (ветка Sub → Mystery Container)"
+  }
+}

@@ -224,10 +224,17 @@ def window_line(r):
     return "📅 Даты пока неизвестны"
 
 
-def short_cond(cond):
+def short_cond(cond, manual=False):
     """Сжимаем длинные условия — они занимают кучу места (см. анализ:
-    'Оформить подписку 1 уровня или подарить подписку 1 уровня' встречается у 14/23)."""
+    'Оформить подписку 1 уровня или подарить подписку 1 уровня' встречается у 14/23).
+
+    manual=True — условие вписано руками в manual/overrides.json; там человек уже
+    сформулировал ровно то, что хотел сказать. Сжатие такие тексты калечит: у
+    покемонов «Оформить или подарить подписку, ЗАТЕМ смотреть 20 минут в 3 разных
+    дня» схлопывалось в «Подписка или гифт», и читатель терял половину условия."""
     c = (cond or "").strip()
+    if manual:
+        return c
     low = c.lower()
     if "подписку" in low and "подарить" in low:
         return "Подписка или гифт"
@@ -274,7 +281,7 @@ def watch_target(r):
 
 def how_short(r):
     """Компактно: как получить + куда идти за значком."""
-    cond = short_cond(r.get("condition"))
+    cond = short_cond(r.get("condition"), (r.get("window") or {}).get("from_manual"))
     kind, label, url = watch_target(r)
     grp = r.get("group") or ""
     grp_tail = f' события «{esc(grp)}»' if grp and grp != "__permanent__" else ""
@@ -396,7 +403,7 @@ def inline_caption(r):
 
 def inline_desc(r):
     """Короткая строка под названием в списке результатов."""
-    cond = short_cond(r.get("condition")) or ""
+    cond = short_cond(r.get("condition"), (r.get("window") or {}).get("from_manual")) or ""
     w = r.get("window") or {}
     if r["status"] == "active" and w.get("end"):
         return f"✅ до {fmt_dt(w['end'])} · {cond}"

@@ -26,7 +26,21 @@ else
 fi
 
 # (2) Бот жив? (ловит failed/StartLimit crash-loop и просто inactive)
-if systemctl is-active --quiet twitch-badges-bot.service; then
+# Перезапуск — штатное событие: twitch-badges-bot-reload.path поднимает бот заново
+# при каждой правке исходников, а Restart=always делает это после сбоя. Оба states
+# занимают ~1-2 секунды, и одиночная проверка успевала поймать их как «бот НЕ
+# работает» (deactivating/stop-sigterm) — владельцу уходил ложный алерт о лежащем
+# сервисе, который на самом деле уже поднимался. Даём процессу дожить рестарт:
+# алертим, только если он не active НИ РАЗУ за несколько проб подряд.
+bot_active() {
+  for _ in 1 2 3 4 5 6; do
+    systemctl is-active --quiet twitch-badges-bot.service && return 0
+    sleep 5
+  done
+  return 1
+}
+
+if bot_active; then
   "$ALERT" --clear bot-down "бот снова активен"
 else
   st=$(systemctl show twitch-badges-bot.service -p ActiveState -p SubState --value | tr '\n' '/')
