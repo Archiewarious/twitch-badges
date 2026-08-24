@@ -64,8 +64,10 @@ bot.py (long-running, systemd)
   ├─ inline: карточки по data/streamdb_latest.json (по mtime)
   └─ publish_new (каждые 2 мин): diff vs data/published.json → посты в канал
 
-bot-reload.path  ← правка bot.py/generate_site.py/fetch_streamdb.py = авто-рестарт бота
-                   (модуль живёт в памяти процесса; без этого правка не применяется)
+bot-reload.path   ← правка bot.py/generate_site.py/fetch_streamdb.py = авто-рестарт бота
+                    (модуль живёт в памяти процесса; без этого правка не применяется)
+overrides.path    ← правка manual/overrides.json = полный refresh
+                    (меняет классификацию → нужны новые карточки и сайт)
 ```
 
 **Худшая задержка от появления значка до поста:** ~2 мин (опрос) + ~30 c (сбор) +

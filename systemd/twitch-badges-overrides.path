@@ -1,0 +1,13 @@
+[Unit]
+Description=Rebuild when manual/overrides.json is edited
+
+[Path]
+# Ручные данные меняют классификацию значков, а значит и сайт с карточками —
+# поэтому запускаем полный refresh, а не просто рестарт бота. Без этого правка
+# ждала бы очередного получасового сбора: сторож изменений сравнивает данные
+# StreamDatabase и про наш локальный файл ничего не знает.
+PathChanged=/home/archie/projects/twitch-badges/manual/overrides.json
+Unit=twitch-badges-refresh.service
+
+[Install]
+WantedBy=multi-user.target
