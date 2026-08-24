@@ -408,6 +408,11 @@ def main() -> int:
                 chans = av.pop("channels", None)
                 av["channel_count"] = len(chans) if isinstance(chans, list) else 0
 
+    # Второй источник: Twitch Helix. Пустой словарь, если ключей нет — тогда всё
+    # работает ровно как раньше, на одном StreamDatabase.
+    import fetch_badges
+    helix = fetch_badges.try_collect_info()
+
     snapshot = {
         "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "build_id": build_id,
@@ -415,15 +420,17 @@ def main() -> int:
         "events": events,
         "twitch_links": twitch_links,
         "page_info": page_info,
+        "helix": helix,
     }
 
     # Пишем в staging. Картинки качает generate_site.sync_images (только актуальные),
     # а commit-rename incoming→latest делает refresh.sh последним шагом.
     atomic_write_json(INCOMING_FILE, snapshot)
 
+    helix_note = f", {len(helix)} описаний Twitch" if helix else ", Helix выключен (нет ключей)"
     print(f"OK: {len(badge_list)} бейджей, {len(events)} ивентов, "
-          f"{len(twitch_links)} ссылок, {len(page_info)} описаний с датами "
-          f"→ {INCOMING_FILE.name} ({snapshot['fetched_at']})")
+          f"{len(twitch_links)} ссылок, {len(page_info)} описаний с датами"
+          f"{helix_note} → {INCOMING_FILE.name} ({snapshot['fetched_at']})")
     return 0
 
 

@@ -697,6 +697,55 @@ def aggregate_family(members):
     }
 
 
+def condition_from_helix(desc):
+    """Условие из описания значка в Twitch Helix.
+
+    Twitch пишет их шаблонно, поэтому разбираем те же примитивы, что и
+    describe_condition_ru: «watching ... for 60 minutes», «subscribing, gifting,
+    or using Bits». Если шаблон не узнан — None, а НЕ сырой английский текст:
+    строка вида «This badge was earned during the X campaign» условия не несёт,
+    и подставлять её вместо условия — врать читателю (пусть лучше честное
+    «условия уточняются»)."""
+    if not desc:
+        return None
+    raw = desc.lower()
+    parts = []
+    if re.search(r"subscrib|gift", raw):
+        parts.append("оформить или подарить подписку")
+    m = re.search(r"watch\w*\b[^.]*?(\d+)\s*(minute|min|hour)", raw)
+    if m:
+        mins = int(m.group(1)) * (60 if m.group(2) == "hour" else 1)
+        parts.append(f"смотреть эфир {ru_duration_minutes(mins)}")
+    elif re.search(r"\bwatch", raw):
+        parts.append("смотреть эфир")
+    if re.search(r"bits|cheer", raw):
+        parts.append("потратить Bits")
+    text = " или ".join(parts)
+    return text[0].upper() + text[1:] if text else None
+
+
+def apply_helix_info(windows, helix, records_ids=None):
+    """Дополняет окна вторым источником — описанием значка у самого Twitch.
+
+    SD для свежих кампаний часто пуст («We don't yet know if this badge is earned
+    by subscribing or watching»), и тогда единственные машинночитаемые данные
+    лежат в Helix. Только ЗАПОЛНЯЕМ пустое: даты и разобранные условия SD
+    точнее, перетирать их описанием нельзя."""
+    for set_id, info in (helix or {}).items():
+        wins = windows.get(set_id)
+        if not wins:
+            continue
+        for w in wins:
+            if not w.get("condition"):
+                cond = condition_from_helix(info.get("description"))
+                if cond:
+                    w["condition"] = cond
+            url = info.get("click_url") or ""
+            if not w.get("twitch_link") and url.startswith("https://"):
+                w["twitch_link"] = {"label": info.get("title") or "на Twitch", "url": url}
+    return windows
+
+
 def load_overrides():
     """Ручные дополнения из manual/overrides.json (см. _readme внутри файла).
     Битый JSON НЕ роняет refresh молча: печатаем в stderr и работаем без него —
@@ -895,6 +944,8 @@ def build_records(snapshot):
     windows_by_id = add_event_content_windows(windows_by_id, snapshot.get("events", []), badges, page_info, links)
     windows_by_id = add_catalog_windows(windows_by_id, badges, page_info, links)
     windows_by_id = enrich_windows(windows_by_id, page_info, links)
+    # Второй автоматический источник — описание значка у Twitch (Helix).
+    windows_by_id = apply_helix_info(windows_by_id, snapshot.get("helix"))
     # Человек — последний и главный источник: перекрывает всё, что выведено выше.
     windows_by_id = apply_manual_overrides(windows_by_id, load_overrides())
     raw = []
