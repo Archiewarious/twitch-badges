@@ -1,0 +1,15 @@
+[Unit]
+Description=Poll StreamDatabase for changes, trigger refresh immediately
+After=network-online.target
+Wants=network-online.target
+OnFailure=tg-alert@%n.service
+
+[Service]
+Type=oneshot
+User=archie
+WorkingDirectory=/home/archie/projects/twitch-badges
+ExecStart=/home/archie/projects/twitch-badges/venv/bin/python /home/archie/projects/twitch-badges/poll_changes.py
+# Опрос — три коротких запроса; если завис дольше минуты, значит SD не отвечает,
+# и ждать смысла нет: следующий тик через 2 минуты попробует заново.
+TimeoutStartSec=60
+MemoryMax=128M

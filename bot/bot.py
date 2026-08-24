@@ -81,7 +81,11 @@ CARDS_DIR = PROJECT_ROOT / "data" / "cards"
 PUBLISHED_FILE = PROJECT_ROOT / "data" / "published.json"
 HEARTBEAT_FILE = PROJECT_ROOT / "data" / "bot_alive"
 
-PUBLISH_INTERVAL = 600   # проверяем базу раз в 10 минут (появления постим по одному за тик)
+# Проверяем базу раз в 2 минуты. Работа тут дешёвая: читаем ЛОКАЛЬНЫЙ снапшот и
+# только по изменению mtime пересчитываем записи (см. get_records) — сеть трогаем
+# лишь когда реально есть что публиковать. Раньше стояло 10 минут, и свежие данные
+# просто лежали в файле, добавляя задержки к опросу StreamDatabase.
+PUBLISH_INTERVAL = 120
 # Тихие часы (МСК): в этом окне НЕ шлём несрочные посты («последний день» и анонсы,
 # до старта которых >сутки) — придерживаем до утра, чтобы не будить ночью. Срочное
 # («доступен сейчас», «стартовало», анонс со стартом <сутки) идёт в любое время.
@@ -508,6 +512,9 @@ def make_entry(r):
         "ending": False,
         # анонс ушёл с приблизительными датами → потом стоит прислать уточнение
         "dates_vague": window_vague(w),
+        # ...и то же самое про условие: анонс без «как получить» требует
+        # продолжения, когда SD/Twitch наконец скажут, что делать.
+        "cond_vague": not r.get("condition"),
     }
 
 
@@ -544,6 +551,8 @@ def channel_header(kind, r):
         return f'📅 <b>Скоро новый значок</b>\n{head} {name}'
     if kind == "dates_confirmed":
         return f'⏰ <b>Уточнили время</b>\n{name}'
+    if kind == "cond_confirmed":
+        return f'📝 <b>Стало известно, как получить</b>\n{name}'
     if kind == "started":
         return f'▶️ <b>Стартовало — можно получать сейчас!</b>\n{name}'
     if kind == "ending":
@@ -614,6 +623,8 @@ def album_header(kind, group, n):
         return f'📅 <b>Скоро новые значки</b>{tail}'
     if kind == "dates_confirmed":
         return f'⏰ <b>Уточнили время</b>{tail}'
+    if kind == "cond_confirmed":
+        return f'📝 <b>Стало известно, как получить</b>{tail}'
     if kind == "started":
         return f'▶️ <b>Стартовало — можно получать сейчас!</b>{tail}'
     return f'⏳ <b>Последний день — успей получить!</b>{tail}'
@@ -696,7 +707,7 @@ def night_hold(kind, r, now):
     """Придержать ли пост в тихие часы (несрочное). Срочное — всегда сразу."""
     if kind == "ending":
         return True
-    if kind == "dates_confirmed":
+    if kind in ("dates_confirmed", "cond_confirmed"):
         return True          # уточнение не срочное — подождёт до утра
     if kind == "appeared_upcoming":
         s = (r.get("window") or {}).get("start")
@@ -767,14 +778,24 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
                 # больше суток: иначе уточнение и «стартовало» встанут рядом —
                 # это ровно тот дубль, что был у La Velada.
                 announce.append((key, r, "dates_confirmed"))
+            elif (st.get("cond_vague") and not st.get("cond_known")
+                  and r.get("condition")
+                  and not (end and (end - now).total_seconds() <= ENDING_WINDOW)):
+                # Анонс ушёл с «Условия уточняются» (SD заводит значок раньше, чем
+                # модератор напишет описание — так было у nasa-roman), а теперь
+                # условие известно. Молчать нельзя: у читателя остался пост, из
+                # которого непонятно, что делать. Не шлём, если значок уже на
+                # последнем дне — там рядом встанет «успей получить».
+                announce.append((key, r, "cond_confirmed"))
             elif active and not st.get("ending") and short:
                 ending.append((key, r))
 
     night = in_quiet_hours(now)
 
     # ПОЯВЛЕНИЯ/СТАРТЫ: по ОДНОЙ ГРУППЕ за тик — так они расходятся во времени
-    # (интервал = PUBLISH_INTERVAL, 10 мин), а не валятся пачкой. Ночью несрочные
-    # анонсы (старт >суток) придерживаем до утра.
+    # (интервал = PUBLISH_INTERVAL), а не валятся пачкой. Ночью несрочные анонсы
+    # (старт >суток) придерживаем до утра — если тихие часы включены (сейчас нет:
+    # QUIET_HOURS_START==END в .env, владелец хочет новости немедленно).
     ready = [item for item in announce if not (night and night_hold(item[2], item[1], now))]
 
     # Бейджи одного события (напр. 6 тиров EWC Co-Streamer) — ОДИН пост-альбом,
@@ -839,6 +860,8 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
                 state[key]["started"] = True
             elif kind == "dates_confirmed":
                 state[key]["dates_confirmed"] = True
+            elif kind == "cond_confirmed":
+                state[key]["cond_known"] = True
                 state[key]["dates_vague"] = False
                 state[key]["end"] = iso(effective_end(r.get("window") or {}))
             elif kind == "active_short":

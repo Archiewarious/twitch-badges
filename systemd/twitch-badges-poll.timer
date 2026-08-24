@@ -1,0 +1,12 @@
+[Unit]
+Description=Check StreamDatabase for new badges every couple of minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+# Разброс, чтобы не долбить SD ровно по расписанию вместе со всеми
+RandomizedDelaySec=20s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
