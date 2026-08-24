@@ -141,9 +141,30 @@ def pending_badges(snapshot):
     и мы бы узнали о нём только со следующим получасовым refresh, продолжая
     висеть в канале с «Условия уточняются»."""
     import generate_site as site
+    from datetime import datetime, timedelta, timezone
+
+    # Только те, чьи страницы полный сбор ВООБЩЕ пересканирует (collect_badge_pages
+    # смотрит назад на PAGE_SCAN_DAYS). Иначе получается вечный цикл: у «egg»
+    # (заведён 27 дней назад) описание на странице есть, в page_info его нет и не
+    # будет — сбор туда не ходит, — и опрос каждые две минуты видел «новое
+    # описание» и заново дёргал refresh, который ничего не менял.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=collector.PAGE_SCAN_DAYS)
+    fresh = set()
+    for b in snapshot.get("badges") or []:
+        sid = (b.get("current") or {}).get("set_id")
+        ts = collector._badge_added_at(b)
+        if not sid or not ts:
+            continue
+        try:
+            if datetime.fromisoformat(ts.replace("Z", "+00:00")) >= cutoff:
+                fresh.add(sid)
+        except ValueError:
+            continue
 
     out = []
     for r in site.build_records(snapshot):
+        if r["set_id"] not in fresh:
+            continue
         if r["status"] not in ("active", "upcoming") or r.get("group") == "__permanent__":
             continue
         w = r.get("window") or {}
@@ -165,9 +186,19 @@ def pending_badges(snapshot):
 def page_changed(build_id, snapshot, set_ids):
     """Появилось ли на странице значка то, чего у нас ещё нет. Сравниваем не сырой
     текст, а РАЗОБРАННЫЙ результат: правка опечатки в описании нам не новость,
-    а вот возникшее условие или ссылка — да."""
+    а вот возникшее условие или ссылка — да.
+
+    Разбирать ОБЯЗАТЕЛЬНО с той же датой появления значка, что использует
+    collect_badge_pages: она чинит год в датах (_fix_stale_year). Без неё разбор
+    даёт другой результат, чем лежит в снапшоте, «изменение» находится каждый
+    раз, и опрос дёргает refresh каждые две минуты вечно."""
     page_info = snapshot.get("page_info") or {}
     links = snapshot.get("twitch_links") or {}
+    added_by_id = {}
+    for b in snapshot.get("badges") or []:
+        sid = (b.get("current") or {}).get("set_id")
+        if sid and sid not in added_by_id:
+            added_by_id[sid] = collector._badge_added_at(b)
     for sid in set_ids:
         try:
             text = collector.fetch_badge_page_text(build_id, sid)
@@ -175,7 +206,7 @@ def page_changed(build_id, snapshot, set_ids):
             continue
         if not text:
             continue
-        info = collector.parse_badge_page_text(text, None)
+        info = collector.parse_badge_page_text(text, added_by_id.get(sid))
         link = collector.extract_link_from_text(text)
         if info and info != page_info.get(sid):
             return f"у значка {sid} появилось описание с датами"
