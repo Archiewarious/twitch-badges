@@ -15,7 +15,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 import fetch_streamdb as collector
 import generate_site as site
@@ -23,6 +23,7 @@ import generate_site as site
 ROOT = Path(__file__).resolve().parent
 IMAGES_DIR = ROOT / "data" / "images"
 CARDS_DIR = ROOT / "data" / "cards"
+FONT_FILE = ROOT / "assets" / "Manrope-Bold.ttf"
 
 # Квадрат: Telegram в inline-сетке режет широкие картинки по бокам (значок слева
 # пропадает). Квадрат с центрированным значком влезает в ячейку целиком.
@@ -148,8 +149,47 @@ def render_card(r, out_path):
                            chip_y + (chip_s - ic.height) // 2), ic)
         except Exception:
             pass
+    else:
+        # Значка нет вовсе — кампания анонсирована, а Twitch арт ещё не выложил
+        # (LEGO Harley Quinn/Joker: у SD есть точные даты и условие, объекта
+        # значка нет). Раньше такие посты не уходили СОВСЕМ: post_badge молча
+        # пропускает запись без картинки. Рисуем название кампании текстом —
+        # честно и достаточно, чтобы анонс вышел вовремя.
+        draw_title_text(d, r.get("title") or "", chip_x, chip_y, chip_s, chip)
 
     img.save(out_path, "PNG")
+
+
+def draw_title_text(d, title, chip_x, chip_y, chip_s, chip_color):
+    """Название кампании по центру чипа, с переносом по словам."""
+    dark_chip = sum(chip_color[:3]) / 3 < 128
+    color = (236, 239, 245) if dark_chip else (24, 30, 46)
+    pad = 34
+    size = 54
+    while size >= 24:
+        try:
+            font = ImageFont.truetype(str(FONT_FILE), size)
+        except OSError:                      # шрифта нет — берём встроенный
+            font = ImageFont.load_default(size=size)
+        words, lines, cur = title.split(), [], ""
+        for wd in words:
+            probe = f"{cur} {wd}".strip()
+            if d.textlength(probe, font=font) <= chip_s - 2 * pad or not cur:
+                cur = probe
+            else:
+                lines.append(cur)
+                cur = wd
+        if cur:
+            lines.append(cur)
+        line_h = int(size * 1.25)
+        if len(lines) * line_h <= chip_s - 2 * pad:
+            break
+        size -= 6
+    y = chip_y + (chip_s - len(lines) * line_h) // 2
+    for ln in lines:
+        w = d.textlength(ln, font=font)
+        d.text((chip_x + (chip_s - w) / 2, y), ln, font=font, fill=color)
+        y += line_h
 
 
 def is_shown(r):
@@ -163,7 +203,9 @@ def sync_cards(records):
     for r in records:
         if not is_shown(r):
             continue
-        key = collector.image_cache_key(r["image"])
+        # card_key — для записей без значка (кампания анонсирована, арта ещё нет):
+        # имя файла карточки не из чего вывести, берём заданный ключ.
+        key = r.get("card_key") or collector.image_cache_key(r["image"])
         if not key:
             continue
         wanted.add(key)
@@ -172,7 +214,7 @@ def sync_cards(records):
     # Тот же fail-close, что и в sync_images: если UUID не распознался НИ У ОДНОГО
     # показываемого бейджа, значит сломался разбор URL, а не кончились раздачи.
     # Без этого удалились бы все карточки, а refresh вышел бы с кодом 0 — молча.
-    shown = [r for r in records if is_shown(r)]
+    shown = [r for r in records if is_shown(r) and r.get("image")]
     if shown and not wanted:
         raise RuntimeError(
             f"ни у одного из {len(shown)} показываемых бейджей не распознан UUID картинки — "

@@ -139,14 +139,17 @@ CARD_VERSION = 9
 
 
 def card_url(r):
-    """URL пре-рендер-карточки; фоллбэк на сырой значок, если карточки ещё нет."""
-    key = collector.image_cache_key(r["image"])
-    if not key:
-        return None
-    if (CARDS_DIR / f"{key}.png").exists():
-        return f"{SITE_URL}/cards/{key}.png?v={CARD_VERSION}"
-    if (IMAGES_DIR / f"{key}.png").exists():
-        return f"{SITE_URL}/badges/{key}.png"
+    """URL пре-рендер-карточки; фоллбэк на сырой значок, если карточки ещё нет.
+
+    card_key — записи без значка (кампания анонсирована, Twitch арт не выложил):
+    имя файла выводить не из чего, поэтому ключ задаётся явно. Фоллбэк на сырой
+    значок для них не работает — картинки нет — но карточка с названием есть."""
+    img_key = collector.image_cache_key(r["image"])
+    card_key = r.get("card_key") or img_key
+    if card_key and (CARDS_DIR / f"{card_key}.png").exists():
+        return f"{SITE_URL}/cards/{card_key}.png?v={CARD_VERSION}"
+    if img_key and (IMAGES_DIR / f"{img_key}.png").exists():
+        return f"{SITE_URL}/badges/{img_key}.png"
     return None
 
 

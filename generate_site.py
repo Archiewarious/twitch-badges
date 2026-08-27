@@ -201,6 +201,40 @@ def strip_accents(s):
     return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
 
 
+def _category_fields(cats):
+    """Первая категория окна в виде (имя, box_art).
+
+    Формат менялся: раньше {"game": {"name", "box_art_url"}, "href": ...}, с
+    27.08.2026 — плоский {"id", "name", "box_art_url", "igdb_id"}. Читаем оба,
+    иначе имя категории теряется молча: у всех значков стало «игра=—», и посты
+    лишились указания, ГДЕ смотреть.
+
+    href в новом формате нет вовсе, и построить его из имени нельзя: Twitch
+    отвечает 200 на любой слаг, проверить догадку невозможно, а битый URL в
+    inline-кнопке роняет весь ответ (Button_url_invalid). Поэтому ссылку берём
+    только из данных, а имя показываем текстом."""
+    if not cats:
+        return "", None
+    c = cats[0] or {}
+    nested = c.get("game") or {}
+    name = c.get("name") or nested.get("name") or ""
+    box = c.get("box_art_url") or nested.get("box_art_url")
+    # Имя берём, только если категория ОДНА. У покемонов их 20 (включая Just
+    # Chatting, Art, Music), и подпись «Pokémon FireRed/LeafGreen» врала бы:
+    # читатель решил бы, что нужна именно эта игра. Лучше промолчать.
+    if len(cats) > 1:
+        return "", box
+    return name, box
+
+
+def _category_name(cats):
+    return _category_fields(cats)[0]
+
+
+def _category_box_art(cats):
+    return _category_fields(cats)[1]
+
+
 def collect_windows_by_set_id(events, twitch_links=None):
     twitch_links = twitch_links or {}
     # Сначала собираем все availability._id по кампании (group), чтобы каждое окно
@@ -236,7 +270,7 @@ def collect_windows_by_set_id(events, twitch_links=None):
                 # Списки участников больше не храним (см. fetch_streamdb) — только счётчик;
                 # fallback на старый формат со списком, если снапшот ещё не обрезан.
                 channel_count = av.get("channel_count", len(av.get("channels") or []))
-                game = cats[0].get("game", {}).get("name", "") if cats else ""
+                game = _category_name(cats)
                 windows.setdefault(set_id, []).append({
                     "event_title": ev_title,
                     "group": grp,
@@ -254,7 +288,7 @@ def collect_windows_by_set_id(events, twitch_links=None):
                     "id": av.get("_id"),
                     "all_ids": ids_by_group.get(grp, []),
                     "category_href": cats[0].get("href") if cats else None,
-                    "box_art_url": cats[0].get("game", {}).get("box_art_url") if cats else None,
+                    "box_art_url": _category_box_art(cats),
                     # Автономная ссылка Twitch (событие/категория) со страницы бейджа
                     # StreamDatabase — для каналовых бейджей без categories (EWC и т.п.).
                     "twitch_link": twitch_links.get(set_id),
@@ -964,12 +998,15 @@ def add_orphan_event_records(records, snapshot, now):
         else:
             continue          # уже прошло — воскрешать нечего
         art, art_from = _previous_year_art(slug, badges)
-        if not art:
-            continue          # без картинки бот всё равно не опубликует
+        # Прошлогоднего арта может не быть вовсе — серия новая или не годовая
+        # (LEGO Harley Quinn/Joker). Раньше такие кампании просто выбрасывались,
+        # и анонс не выходил, хотя у SD были и точные даты, и условие. Теперь
+        # рисуем карточку с названием кампании (см. render_cards.draw_title_text).
         out.append({
             "set_id": slug,
             "title": title,
-            "image": art,
+            "image": art or "",
+            "card_key": None if art else f"event-{slug}",
             "holders": None,
             "version_count": 1,
             "first_seen": None,
