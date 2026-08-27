@@ -92,8 +92,19 @@ def fetch_next_data(build_id: str, path: str) -> dict:
 
 
 def find_badge_list(obj):
-    if isinstance(obj, list) and obj and isinstance(obj[0], dict) and "current" in obj[0]:
-        return obj
+    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+        if "current" in obj[0]:
+            return obj
+        # 27.08.2026 SD завернул каждый значок каталога в {"twitchGlobalBadge": {...}}
+        # (pageProps.data вместо плоского списка). Формат событий при этом не менялся.
+        # Пока распаковки не было, find_badge_list возвращал None → guard «пустой
+        # список бейджей» ронял refresh каждые полчаса, а опрос молча пропускал тик:
+        # данные не обновлялись ~35 минут.
+        if "twitchGlobalBadge" in obj[0]:
+            inner = [it["twitchGlobalBadge"] for it in obj
+                     if isinstance(it, dict) and isinstance(it.get("twitchGlobalBadge"), dict)]
+            if inner and "current" in inner[0]:
+                return inner
     if isinstance(obj, dict):
         for v in obj.values():
             found = find_badge_list(v)

@@ -11,5 +11,8 @@ WorkingDirectory=/home/archie/projects/twitch-badges
 ExecStart=/home/archie/projects/twitch-badges/venv/bin/python /home/archie/projects/twitch-badges/poll_changes.py
 # Опрос — три коротких запроса; если завис дольше минуты, значит SD не отвечает,
 # и ждать смысла нет: следующий тик через 2 минуты попробует заново.
-TimeoutStartSec=60
+# Таймер тикает раз в 2 минуты; параллельный запуск systemd не сделает, поэтому
+# предел близок к периоду. 60 с было мало: один медленный ответ SD дал ложный
+# алерт «юнит упал», хотя следующий тик отработал штатно.
+TimeoutStartSec=100
 MemoryMax=128M
