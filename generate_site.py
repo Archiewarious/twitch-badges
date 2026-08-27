@@ -220,6 +220,16 @@ def collect_windows_by_set_id(events, twitch_links=None):
         for badge in ev.get("twitch_global_badges", []):
             set_id = badge.get("current", {}).get("set_id", "")
             for av in badge.get("availability", []):
+                # hidden — черновик модератора SD, ещё не опубликованный. С августа
+                # 2026 SD заводит такую запись сразу при появлении значка («badge
+                # timeframe and unlock information is now moving to its own
+                # availability tab»), и все поля в ней пустые. Источник этот —
+                # высшего приоритета, поэтому пустышка перекрывала фолбэки, где
+                # даты уже были: nasa-roman, оба Pikachu, dron-e, diablo разом
+                # оказались «нет дат, не знаю, как классифицировать».
+                # add_catalog_windows скрытые пропускал всегда — здесь не хватало.
+                if av.get("hidden"):
+                    continue
                 start = parse_dt(av.get("start_at_date"), av.get("start_at_time"))
                 end = parse_dt(av.get("end_at_date"), av.get("end_at_time"))
                 cats = av.get("categories") or []
@@ -408,7 +418,26 @@ def add_event_content_windows(windows, events, badges, page_info=None, twitch_li
     return windows
 
 
-def enrich_windows(windows, page_info=None, twitch_links=None):
+def event_dates_by_set_id(events):
+    """Даты САМОГО события для каждого привязанного значка. Нужны, чтобы залатать
+    пустые availability (см. enrich_windows)."""
+    out = {}
+    for ev in events or []:
+        if ev.get("hidden"):
+            continue
+        start = parse_dt(ev.get("start_at_date"), ev.get("start_at_time"))
+        end = parse_dt(ev.get("end_at_date"), ev.get("end_at_time"))
+        if not start and not end:
+            continue
+        coarse = not (ev.get("start_at_time") or ev.get("end_at_time"))
+        for b in ev.get("twitch_global_badges") or []:
+            sid = (b.get("current") or {}).get("set_id")
+            if sid and sid not in out:
+                out[sid] = (start, end, coarse, ev.get("title") or "")
+    return out
+
+
+def enrich_windows(windows, page_info=None, twitch_links=None, event_dates=None):
     """Победившее окно дополняем тем, чего в нём нет, из остальных источников.
 
     Цепочка приоритетов выбирает окно целиком: первый источник с датами отдаёт и
@@ -416,13 +445,41 @@ def enrich_windows(windows, page_info=None, twitch_links=None):
     у Egg событие «Egg Hunt 2026» дало точные 29.07 10:00→26.08, но с пустыми
     флагами условия и без ссылки, и пост выродился в «Условия уточняются» без
     ссылки, хотя на странице SD было «subscribed or gifted» и ссылка на ROBLOX.
-    Даты не трогаем — только заполняем пустые поля."""
+
+    ДАТЫ тоже заполняем — но только когда их нет ВООБЩЕ. С августа 2026 SD
+    заводит значку availability сразу, а даты в неё вписывает позже, и такая
+    пустая оболочка выигрывала приоритет у источников, где даты уже были:
+    все фолбэки ниже пропускают значок, если окно для него уже существует.
+    Итог — семь значков разом (nasa-roman, оба Pikachu, dron-e, diablo…) висели
+    как «нет дат, не знаю, как классифицировать», хотя у их событий даты стояли.
+    Существующие даты не трогаем: availability точнее события."""
     page_info = page_info or {}
     twitch_links = twitch_links or {}
+    event_dates = event_dates or {}
     for set_id, wins in windows.items():
         info = page_info.get(set_id) or {}
         link = twitch_links.get(set_id)
         for w in wins:
+            if not w.get("start") and not w.get("end"):
+                if info.get("start"):
+                    w["start"] = parse_dt(info["start"].split("T")[0],
+                                          info["start"].split("T")[1][:5])
+                    if info.get("end"):
+                        w["end"] = parse_dt(info["end"].split("T")[0],
+                                            info["end"].split("T")[1][:5])
+                    w["from_page"] = True
+                    w["start_time_known"] = bool(info.get("start_time_known"))
+                    w["end_time_known"] = bool(info.get("end_time_known"))
+                    w["dates_unconfirmed"] = bool(info.get("unconfirmed"))
+                    w["too_late"] = bool(info.get("too_late"))
+                elif set_id in event_dates:
+                    start, end, coarse, title = event_dates[set_id]
+                    w["start"], w["end"] = start, end
+                    w["dates_coarse"] = coarse
+                    if not w.get("event_title"):
+                        w["event_title"] = title
+                    if not w.get("group"):
+                        w["group"] = group_key(title)
             if not w.get("condition"):
                 cond = PAGE_KIND_RU.get(info.get("kind"))
                 if cond and info.get("watch_minutes"):
@@ -943,7 +1000,8 @@ def build_records(snapshot):
     windows_by_id = add_event_windows(windows_by_id, snapshot.get("events", []), page_info, links)
     windows_by_id = add_event_content_windows(windows_by_id, snapshot.get("events", []), badges, page_info, links)
     windows_by_id = add_catalog_windows(windows_by_id, badges, page_info, links)
-    windows_by_id = enrich_windows(windows_by_id, page_info, links)
+    windows_by_id = enrich_windows(windows_by_id, page_info, links,
+                                   event_dates_by_set_id(snapshot.get("events", [])))
     # Второй автоматический источник — описание значка у Twitch (Helix).
     windows_by_id = apply_helix_info(windows_by_id, snapshot.get("helix"))
     # Человек — последний и главный источник: перекрывает всё, что выведено выше.
