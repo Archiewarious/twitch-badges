@@ -12,5 +12,7 @@ WorkingDirectory=/home/archie/projects/twitch-badges
 # Так проверка видит ровно те данные, на которых работает бот, и не добавляет
 # нагрузки на SD поверх опроса раз в 2 минуты.
 ExecStart=/home/archie/projects/twitch-badges/venv/bin/python /home/archie/projects/twitch-badges/check_format.py --snapshot
+# Плюс сквозные тесты: ловим ли смену формата и подхватим ли новую кампанию.
+ExecStart=/home/archie/projects/twitch-badges/bot/venv/bin/python /home/archie/projects/twitch-badges/test_pipeline.py
 TimeoutStartSec=120
 MemoryMax=256M
