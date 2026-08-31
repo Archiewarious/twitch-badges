@@ -290,6 +290,23 @@ def strip_accents(s):
     return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
 
 
+# Проверенные ссылки на категории из снапшота (см. fetch_streamdb.resolve_category_urls).
+# Глобальная — чтобы не тащить их параметром через всю цепочку построителей окон;
+# заполняется один раз в build_records.
+_CATEGORY_URLS = {}
+
+
+def category_href(cats):
+    """Ссылка на директорию категории: сначала href от SD (если вернёт его
+    обратно), иначе — наш проверенный URL по имени."""
+    if not cats:
+        return None
+    c = cats[0] or {}
+    if c.get("href"):
+        return c["href"]
+    return _CATEGORY_URLS.get(_category_name(cats))
+
+
 def _category_fields(cats):
     """Первая категория окна в виде (имя, box_art).
 
@@ -376,7 +393,7 @@ def collect_windows_by_set_id(events, twitch_links=None):
                     # Диплинк-поля для кнопок бота (inline + автопост в канал):
                     "id": av.get("_id"),
                     "all_ids": ids_by_group.get(grp, []),
-                    "category_href": cats[0].get("href") if cats else None,
+                    "category_href": category_href(cats),
                     "box_art_url": _category_box_art(cats),
                     # Автономная ссылка Twitch (событие/категория) со страницы бейджа
                     # StreamDatabase — для каналовых бейджей без categories (EWC и т.п.).
@@ -636,12 +653,14 @@ def add_catalog_windows(windows, badges, page_info=None, twitch_links=None):
             if not start and not end:
                 continue
             windows[set_id] = [{
-                "event_title": "", "group": None, "game": "",
+                "event_title": "", "group": None,
                 "start": start, "end": end,
                 "cost": cost_from_steps(av.get("steps"), ", ".join(av.get("costs") or [])),
                 "condition": describe_condition_ru(av),
-                "id": av.get("_id"), "all_ids": [], "category_href": None,
-                "box_art_url": None,
+                "id": av.get("_id"), "all_ids": [],
+                "category_href": category_href(av.get("categories")),
+                "box_art_url": _category_box_art(av.get("categories")),
+                "game": _category_name(av.get("categories")),
                 "twitch_link": (twitch_links or {}).get(set_id),
                 "channel_count": av.get("channel_count", 0),
                 "offline_event": bool(av.get("twitchcon")),
@@ -676,7 +695,7 @@ def add_page_availability_windows(windows, page_avail, twitch_links=None):
                 "cost": cost_from_steps(av.get("steps"), ", ".join(av.get("costs") or [])),
                 "condition": describe_condition_ru(av),
                 "id": av.get("_id"), "all_ids": [],
-                "category_href": cats[0].get("href") if cats else None,
+                "category_href": category_href(cats),
                 "box_art_url": _category_box_art(cats),
                 "twitch_link": (twitch_links or {}).get(set_id),
                 "channel_count": len(av.get("channels") or []),
@@ -1152,6 +1171,8 @@ def add_orphan_event_records(records, snapshot, now):
 
 def build_records(snapshot):
     now = datetime.now(timezone.utc)
+    global _CATEGORY_URLS
+    _CATEGORY_URLS = snapshot.get("category_urls") or {}
     windows_by_id = collect_windows_by_set_id(
         snapshot.get("events", []), snapshot.get("twitch_links"))
     # Приоритет источников окна (более точный НЕ перезаписывается):

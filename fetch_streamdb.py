@@ -393,6 +393,95 @@ def collect_badge_pages(build_id, events, badges):
     return links, infos, avails
 
 
+CATEGORY_URLS_FILE = DATA_DIR / "category_urls.json"
+TWITCH_DIRECTORY = "https://www.twitch.tv/directory/category/"
+OG_TITLE_RE = re.compile(r'<meta\s+property="og:title"\s+content="([^"]+)"')
+
+
+# Twitch отдаёт разметку с og:title только браузерным клиентам; нашему обычному
+# User-Agent прилетает урезанная страница, и проверка ложно проваливалась.
+BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def category_slug(name: str) -> str:
+    """Имя категории Twitch → слаг директории: «Pokémon GO» → «pokemon-go».
+
+    Знаки ™ ® © и апострофы Twitch ВЫБРАСЫВАЕТ, а не заменяет дефисом: иначе
+    «LEGO® Batman™» дало бы «lego-batmantm», а «Tom Clancy's» — «tom-clancy-s»."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", name or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower().replace("&", " and ")
+    s = re.sub(r"[\u2122\u00ae\u00a9'\u2019]", "", s)
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return s.strip("-")
+
+
+def verify_category_url(name: str):
+    """Проверенный URL категории или None.
+
+    Проверка обязательна: Twitch отвечает 200 на ЛЮБОЙ слаг, поэтому по коду
+    ответа догадку не отличить от правды, а битая ссылка в inline-кнопке роняет
+    весь ответ (Button_url_invalid). Настоящая страница категории отдаёт
+    og:title с её именем, выдуманная — не отдаёт вовсе; на это и смотрим.
+
+    Раньше ссылку брали только из поля href у SD, но 27.08.2026 он это поле
+    убрал, и кнопка «Смотреть» пропала у восьми значков сразу."""
+    slug = category_slug(name)
+    if not slug:
+        return None
+    url = TWITCH_DIRECTORY + slug
+    try:
+        resp = SESSION.get(url, headers=BROWSER_HEADERS, timeout=20)
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+    # Twitch не объявляет charset в заголовке, и requests угадывает latin-1:
+    # «Pokémon GO» превращается в «PokÃ©mon GO», слаг не совпадает, ссылка
+    # молча признаётся неподтверждённой.
+    resp.encoding = "utf-8"
+    m = OG_TITLE_RE.search(resp.text)
+    if not m:
+        return None
+    # og:title выглядит как «Pokémon GO - Twitch» — сверяем начало с именем.
+    title = m.group(1).rsplit(" - Twitch", 1)[0].strip()
+    return url if category_slug(title) == slug else None
+
+
+def resolve_category_urls(names):
+    """{имя категории: проверенный URL}. Результат кэшируется на диске, включая
+    отрицательный (url=null): без этого каждый refresh перепроверял бы одни и те
+    же категории, а неудачные — бесконечно."""
+    try:
+        cache = json.loads(CATEGORY_URLS_FILE.read_text())
+    except (OSError, ValueError):
+        cache = {}
+    import time
+
+    changed = False
+    for name in names:
+        if not name or name in cache:
+            continue
+        # Пауза и повтор: подряд идущие запросы Twitch троттлит, отдавая 200 без
+        # og:title. Без этого «Pokémon UNITE» и «Diablo» ложно признавались
+        # неподтверждёнными, хотя поодиночке проверяются нормально. Проверка
+        # редкая (результат кэшируется), так что медлительность не мешает.
+        url = verify_category_url(name)
+        if url is None:
+            time.sleep(2)
+            url = verify_category_url(name)
+        cache[name] = url
+        changed = True
+        time.sleep(1)
+    if changed:
+        atomic_write_json(CATEGORY_URLS_FILE, cache)
+    return {k: v for k, v in cache.items() if v}
+
+
 def download_image(url: str) -> bool:
     """Качает одну картинку по URL в data/images/<uuid>.png. True если скачал.
     Вызывается из generate_site.sync_images() — только для актуальных бейджей,
@@ -449,6 +538,21 @@ def main() -> int:
     # Использует av.channels — ДО обрезки ниже.
     twitch_links, page_info, page_avail = collect_badge_pages(build_id, events, badge_list)
 
+    # Ссылки на категории Twitch: SD убрал поле href 27.08.2026, и кнопка
+    # «Смотреть» пропала у восьми значков. Строим URL из имени категории и
+    # ПРОВЕРЯЕМ его (Twitch отвечает 200 на любой слаг — см. verify_category_url).
+    cat_names = set()
+    for ev in events:
+        for b in ev.get("twitch_global_badges") or []:
+            for av in b.get("availability") or []:
+                for c in av.get("categories") or []:
+                    cat_names.add(c.get("name") or (c.get("game") or {}).get("name"))
+    for lst in page_avail.values():
+        for av in lst:
+            for c in av.get("categories") or []:
+                cat_names.add(c.get("name") or (c.get("game") or {}).get("name"))
+    category_urls = resolve_category_urls(sorted(n for n in cat_names if n))
+
     # Экономия хранения: списки участников (EWC ~1387 стримеров и т.п.) — это ~90%
     # снапшота, а боту/сайту нужен только ФАКТ наличия каналов (детали — логины/аватары —
     # нигде не используются с тех пор, как ведём на страницу события Twitch). Оставляем
@@ -472,6 +576,7 @@ def main() -> int:
         "twitch_links": twitch_links,
         "page_info": page_info,
         "page_availability": page_avail,
+        "category_urls": category_urls,
         "helix": helix,
     }
 
@@ -480,7 +585,8 @@ def main() -> int:
     atomic_write_json(INCOMING_FILE, snapshot)
 
     helix_note = f", {len(helix)} описаний Twitch" if helix else ", Helix выключен (нет ключей)"
-    avail_note = f", {len(page_avail)} availability со страниц"
+    avail_note = (f", {len(page_avail)} availability со страниц"
+                  f", {len(category_urls)} ссылок на категории")
     print(f"OK: {len(badge_list)} бейджей, {len(events)} ивентов, "
           f"{len(twitch_links)} ссылок, {len(page_info)} описаний с датами"
           f"{avail_note}{helix_note} → {INCOMING_FILE.name} ({snapshot['fetched_at']})")
