@@ -139,7 +139,7 @@ def esc(s):
 # Telegram кэширует inline-картинки по URL. uuid карточки завязан на значок и не
 # меняется при редизайне — поэтому версионируем URL, чтобы после смены дизайна
 # Telegram перезабрал новую карточку. Бампать при каждом изменении вида карточки.
-CARD_VERSION = 9
+CARD_VERSION = 10
 
 
 def card_url(r):
@@ -302,6 +302,43 @@ def watch_target(r):
     return (None, None, None)
 
 
+# Не игровые категории Twitch: под них попадает почти любой стрим, поэтому в
+# перечислении они полезнее конкретных игр.
+GENERIC_CATEGORIES = {
+    "Just Chatting", "Music", "Art", "DJs", "Sports", "Talk Shows & Podcasts",
+    "Special Events", "Makers & Crafting", "Co-working & Studying",
+    "Animals, Aquariums, and Zoos", "Science & Technology", "Food & Drink",
+    "Travel & Outdoors", "ASMR", "Beauty & Body Art", "Fitness & Health",
+    "Software and Game Development",
+}
+
+
+def categories_line(r):
+    """«в 20 категориях — Pokémon GO, Just Chatting и другие» для значков, что
+    выдаются во МНОЖЕСТВЕ категорий. Одну ссылку туда ставить нельзя (читатель
+    решит, что нужна именно она), но и молчать нельзя: раньше пост о покемонах
+    вообще не говорил, где их получать."""
+    cats = (r.get("window") or {}).get("categories") or []
+    if len(cats) < 2:
+        return None
+    # Общие категории вперёд: для читателя «подходит Just Chatting» — куда более
+    # полезный факт, чем три малоизвестные игры франшизы, которые SD ставит
+    # первыми. У покемонов из 20 категорий половина именно такие.
+    cats = sorted(cats, key=lambda c: (c not in GENERIC_CATEGORIES, cats.index(c)))
+    head = ", ".join(esc(c) for c in cats[:3])
+    if len(cats) > 3:
+        return (f"в {len(cats)} {plural_cat(len(cats))} — {head} и другие")
+    return f"в категориях {head}"
+
+
+def plural_cat(n):
+    if n % 10 == 1 and n % 100 != 11:
+        return "категории"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return "категориях"
+    return "категориях"
+
+
 def how_short(r):
     """Компактно: как получить + куда идти за значком."""
     cond = short_cond(r.get("condition"), (r.get("window") or {}).get("from_manual"))
@@ -318,6 +355,9 @@ def how_short(r):
                      "channel": "смотри канал",
                      "external": "подробности —"}[kind]
             return f'📍 Условия уточняются · {where} <a href="{esc(url)}">{esc(label)}</a>'
+        many = categories_line(r)
+        if many:
+            return f"📍 Условия уточняются · {many}"
         if (r.get("window") or {}).get("channel_count"):
             return f"📍 Условия уточняются · у участвующих стримеров{grp_tail}"
         return "📍 Условия уточняются"
@@ -326,6 +366,9 @@ def how_short(r):
         prep = {"category": "в категории", "event": "на каналах события",
                 "channel": "у стримера", "external": "—"}[kind]
         return f'📍 {esc(cond)} {prep} <a href="{esc(url)}">{esc(label)}</a>'
+    many = categories_line(r)
+    if many:
+        return f"📍 {esc(cond)} {many}"
     # Каналовый бейдж без курируемой ссылки — просто чёткий текст, без битых ссылок.
     if (r.get("window") or {}).get("channel_count"):
         return f"📍 {esc(cond)} — у участвующих стримеров{grp_tail}"
@@ -534,7 +577,49 @@ def make_entry(r):
         # ...и то же самое про условие: анонс без «как получить» требует
         # продолжения, когда SD/Twitch наконец скажут, что делать.
         "cond_vague": not r.get("condition"),
+        # Запись синтезирована из события, у которого ещё нет значка. Когда
+        # настоящий значок появится, он придёт под ДРУГИМ set_id — по нему и
+        # нужно будет узнать, что это та же кампания (см. supersedes_orphan).
+        "from_orphan": bool(w.get("from_orphan_event")),
+        "start": iso(w.get("start")),
     }
+
+
+ORPHAN_MATCH_DAYS = 2
+
+
+def supersedes_orphan(r, state):
+    """Ключ уже анонсированной ОРФАН-записи, которую этот значок замещает.
+
+    Мы анонсируем кампанию до появления значка (LEGO Harley Quinn вышел за
+    четверо суток до того, как SD завёл сам значок). Потом значок появляется под
+    своим set_id — «harley-mayhem», — и без этой проверки в канал уходит второй
+    пост о той же раздаче. Так и случилось 31.08.2026.
+
+    Связать их по группе нельзя: у орфана она из названия события («LEGO Harley
+    Quinn»), у значка — из кампании SD («LEGO® Batman™: Legacy of the Dark
+    Knight»). Надёжный признак — ОКНО: у обоих совпали и начало, и конец
+    (расхождение в пределах суток, пока SD уточняет часы)."""
+    w = r.get("window") or {}
+    start, end = w.get("start"), w.get("end")
+    if not start and not end:
+        return None
+    for key, st in state.items():
+        if not st.get("from_orphan") or st.get("superseded"):
+            continue
+        for field, mine in (("start", start), ("end", end)):
+            theirs = st.get(field)
+            if not mine or not theirs:
+                return None                      # без обеих дат не рискуем
+            try:
+                other = datetime.strptime(theirs, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                return None
+            if abs((mine - other).total_seconds()) > ORPHAN_MATCH_DAYS * 86400:
+                break
+        else:
+            return key
+    return None
 
 
 def load_state():
@@ -783,7 +868,15 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
         # «последний день» приходили с разницей в часы для суточного окна).
         short = active and end and 0 <= (end - now).total_seconds() <= ENDING_WINDOW
         if key not in state:
-            if short:
+            orphan = supersedes_orphan(r, state)
+            if orphan:
+                # Об этой кампании уже рассказывали — «появился» не шлём, просто
+                # заводим запись, чтобы дальше жить обычным циклом.
+                log.info("%s замещает орфан %s — повторный анонс не шлю", key, orphan)
+                state[key] = make_entry(r)
+                state[orphan]["superseded"] = True
+                save_state(state)
+            elif short:
                 announce.append((key, r, "active_short"))
             else:
                 announce.append((key, r, "appeared_active" if active else "appeared_upcoming"))

@@ -337,6 +337,18 @@ def _category_name(cats):
     return _category_fields(cats)[0]
 
 
+def category_names(cats):
+    """Все имена категорий окна. Когда их много, одну показывать нельзя (см.
+    _category_fields), но и молчать неправильно: у покемонов подходит 20 категорий,
+    включая Just Chatting, и без списка читатель не знает, где смотреть вообще."""
+    out = []
+    for c in cats or []:
+        n = (c or {}).get("name") or ((c or {}).get("game") or {}).get("name")
+        if n and n not in out:
+            out.append(n)
+    return out
+
+
 def _category_box_art(cats):
     return _category_fields(cats)[1]
 
@@ -395,6 +407,7 @@ def collect_windows_by_set_id(events, twitch_links=None):
                     "all_ids": ids_by_group.get(grp, []),
                     "category_href": category_href(cats),
                     "box_art_url": _category_box_art(cats),
+                    "categories": category_names(cats),
                     # Автономная ссылка Twitch (событие/категория) со страницы бейджа
                     # StreamDatabase — для каналовых бейджей без categories (EWC и т.п.).
                     "twitch_link": twitch_links.get(set_id),
@@ -660,6 +673,7 @@ def add_catalog_windows(windows, badges, page_info=None, twitch_links=None):
                 "id": av.get("_id"), "all_ids": [],
                 "category_href": category_href(av.get("categories")),
                 "box_art_url": _category_box_art(av.get("categories")),
+                "categories": category_names(av.get("categories")),
                 "game": _category_name(av.get("categories")),
                 "twitch_link": (twitch_links or {}).get(set_id),
                 "channel_count": av.get("channel_count", 0),
@@ -697,6 +711,7 @@ def add_page_availability_windows(windows, page_avail, twitch_links=None):
                 "id": av.get("_id"), "all_ids": [],
                 "category_href": category_href(cats),
                 "box_art_url": _category_box_art(cats),
+                    "categories": category_names(cats),
                 "twitch_link": (twitch_links or {}).get(set_id),
                 "channel_count": len(av.get("channels") or []),
                 "offline_event": bool(av.get("twitchcon")),
@@ -967,15 +982,41 @@ def apply_helix_info(windows, helix, records_ids=None):
     by subscribing or watching»), и тогда единственные машинночитаемые данные
     лежат в Helix. Только ЗАПОЛНЯЕМ пустое: даты и разобранные условия SD
     точнее, перетирать их описанием нельзя."""
+    import fetch_badges
+
     for set_id, info in (helix or {}).items():
         wins = windows.get(set_id)
         if not wins:
             continue
+        desc = info.get("description")
         for w in wins:
             if not w.get("condition"):
-                cond = condition_from_helix(info.get("description"))
+                cond = condition_from_helix(desc)
                 if cond:
                     w["condition"] = cond
+            # ГДЕ получать. Для 56 значков описание Twitch — единственный
+            # источник этого: у SD для них нет ни категорий, ни каналов, и пост
+            # выходил без единого слова о месте.
+            if not w.get("game"):
+                cat = fetch_badges.category_from_description(desc)
+                if cat:
+                    w["game"] = cat
+                    if not w.get("category_href"):
+                        w["category_href"] = _CATEGORY_URLS.get(cat)
+            # Стоимость из того же описания: «subscribing or gifting» — платно,
+            # «watching» — бесплатно. Иначе у значков, чьё окно построено из дат
+            # события (там costs нет), пилюля цены не появлялась вовсе.
+            if not w.get("cost") and desc:
+                low = desc.lower()
+                if re.search(r"subscrib|gift|bits|cheer", low):
+                    w["cost"] = "paid"
+                elif re.search(r"\bwatch", low):
+                    w["cost"] = "free"
+            if not w.get("twitch_link"):
+                login = fetch_badges.channel_from_description(desc)
+                if login:
+                    w["twitch_link"] = {"label": login,
+                                        "url": f"https://www.twitch.tv/{login}"}
             url = info.get("click_url") or ""
             if not w.get("twitch_link") and url.startswith("https://"):
                 w["twitch_link"] = {"label": info.get("title") or "на Twitch", "url": url}
@@ -1124,12 +1165,19 @@ def add_orphan_event_records(records, snapshot, now):
         raw = content.lower()
         paid = bool(re.search(r"subscri|gift|bits|purchas|\bbuy\b", raw))
         free = bool(re.search(r"\bfree\b|no purchase|no cost|бесплатн", raw))
+        # Тот же шаблон «in the ELDEN RING category», что и в описаниях Twitch,
+        # SD пишет и в тексте события. Без разбора пост о будущей кампании
+        # выходил без единого слова о том, где значок получать.
+        import fetch_badges
+        cat = fetch_badges.category_from_description(content)
         window = {
-            "event_title": title, "group": group_key(title), "game": "",
+            "event_title": title, "group": group_key(title), "game": cat or "",
             "start": start, "end": end,
             "cost": "paid" if (paid and not free) else ("free" if free else None),
             "condition": _condition_from_content(raw),
-            "id": None, "all_ids": [], "category_href": None, "box_art_url": None,
+            "id": None, "all_ids": [],
+            "category_href": _CATEGORY_URLS.get(cat) if cat else None,
+            "box_art_url": None,
             "twitch_link": (snapshot.get("twitch_links") or {}).get(slug),
             "channel_count": 0, "offline_event": False,
             # Часы у события есть — грубыми даты помечаем, только если их не дали.
@@ -1147,9 +1195,14 @@ def add_orphan_event_records(records, snapshot, now):
         # (LEGO Harley Quinn/Joker). Раньше такие кампании просто выбрасывались,
         # и анонс не выходил, хотя у SD были и точные даты, и условие. Теперь
         # рисуем карточку с названием кампании (см. render_cards.draw_title_text).
+        # Показываем имя ЗНАЧКА, если SD его назвал: читатель ищет «Festering
+        # Bloody Finger», а не «Questline 2: Path of the Cardinal Sin».
+        # set_id при этом остаётся слагом события — два разных квестлайна у SD
+        # называют один и тот же значок, и общий слаг склеил бы их в одну запись.
+        badge_name = fetch_badges.badge_name_from_description(content)
         out.append({
             "set_id": slug,
-            "title": title,
+            "title": badge_name or title,
             "image": art or "",
             "card_key": None if art else f"event-{slug}",
             "holders": None,

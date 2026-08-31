@@ -538,6 +538,11 @@ def main() -> int:
     # Использует av.channels — ДО обрезки ниже.
     twitch_links, page_info, page_avail = collect_badge_pages(build_id, events, badge_list)
 
+    # Второй источник: Twitch Helix. Пустой словарь, если ключей нет — тогда всё
+    # работает ровно как раньше, на одном StreamDatabase.
+    import fetch_badges
+    helix = fetch_badges.try_collect_info()
+
     # Ссылки на категории Twitch: SD убрал поле href 27.08.2026, и кнопка
     # «Смотреть» пропала у восьми значков. Строим URL из имени категории и
     # ПРОВЕРЯЕМ его (Twitch отвечает 200 на любой слаг — см. verify_category_url).
@@ -551,6 +556,17 @@ def main() -> int:
         for av in lst:
             for c in av.get("categories") or []:
                 cat_names.add(c.get("name") or (c.get("game") or {}).get("name"))
+    # ...и категории, названные в описаниях Twitch («in the ELDEN RING category»).
+    # Для многих значков это единственное указание места: у SD категорий нет.
+    for sid, info in (helix or {}).items():
+        cat = fetch_badges.category_from_description(info.get("description"))
+        if cat:
+            cat_names.add(cat)
+    # ...и категории из текста событий SD (кампании, у которых значка ещё нет).
+    for ev in events:
+        cat = fetch_badges.category_from_description(ev.get("content"))
+        if cat:
+            cat_names.add(cat)
     category_urls = resolve_category_urls(sorted(n for n in cat_names if n))
 
     # Экономия хранения: списки участников (EWC ~1387 стримеров и т.п.) — это ~90%
@@ -562,11 +578,6 @@ def main() -> int:
             for av in badge.get("availability", []):
                 chans = av.pop("channels", None)
                 av["channel_count"] = len(chans) if isinstance(chans, list) else 0
-
-    # Второй источник: Twitch Helix. Пустой словарь, если ключей нет — тогда всё
-    # работает ровно как раньше, на одном StreamDatabase.
-    import fetch_badges
-    helix = fetch_badges.try_collect_info()
 
     snapshot = {
         "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
