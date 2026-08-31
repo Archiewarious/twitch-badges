@@ -325,7 +325,12 @@ def categories_line(r):
     # полезный факт, чем три малоизвестные игры франшизы, которые SD ставит
     # первыми. У покемонов из 20 категорий половина именно такие.
     cats = sorted(cats, key=lambda c: (c not in GENERIC_CATEGORIES, cats.index(c)))
-    head = ", ".join(esc(c) for c in cats[:3])
+    # Каждое имя — ссылка на директорию Twitch, если она у нас подтверждена.
+    # Без этого читателю приходилось искать категорию руками.
+    def link(name):
+        url = site.category_url_for(name)
+        return f'<a href="{esc(url)}">{esc(name)}</a>' if url else esc(name)
+    head = ", ".join(link(c) for c in cats[:3])
     if len(cats) > 3:
         return (f"в {len(cats)} {plural_cat(len(cats))} — {head} и другие")
     return f"в категориях {head}"

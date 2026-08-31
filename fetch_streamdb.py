@@ -8,6 +8,7 @@
 дёргаем его /_next/data/<buildId>/*.json — те же данные, что видит браузер,
 без рендеринга HTML.
 """
+import html
 import json
 import os
 import re
@@ -421,65 +422,122 @@ def category_slug(name: str) -> str:
     return s.strip("-")
 
 
+def _no_article(slug: str) -> str:
+    for art in ("the-", "a-", "an-"):
+        if slug.startswith(art):
+            return slug[len(art):]
+    return slug
+
+
+def _slug_candidates(name: str):
+    """Возможные адреса категории. Twitch нередко держит её по УКОРОЧЕННОМУ пути:
+    «The Blood of Dawnwalker» лежит на /dawnwalker. Пробуем от полного к
+    короткому — проверка ниже всё равно отсеет неверное."""
+    full = category_slug(name)
+    out = [full]
+    parts = full.split("-")
+    if parts and parts[0] in ("the", "a", "an"):
+        out.append("-".join(parts[1:]))
+    if len(parts) > 1:
+        out.append(parts[-1])                      # «dawnwalker»
+        out.append("-".join(parts[-2:]))
+    seen, uniq = set(), []
+    for c in out:
+        if c and c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return uniq
+
+
 def verify_category_url(name: str):
     """Проверенный URL категории или None.
 
     Проверка обязательна: Twitch отвечает 200 на ЛЮБОЙ слаг, поэтому по коду
     ответа догадку не отличить от правды, а битая ссылка в inline-кнопке роняет
     весь ответ (Button_url_invalid). Настоящая страница категории отдаёт
-    og:title с её именем, выдуманная — не отдаёт вовсе; на это и смотрим.
+    og:title с её именем, выдуманная — не отдаёт вовсе.
 
-    Раньше ссылку брали только из поля href у SD, но 27.08.2026 он это поле
-    убрал, и кнопка «Смотреть» пропала у восьми значков сразу."""
-    slug = category_slug(name)
-    if not slug:
+    Сверяем og:title с ИМЕНЕМ категории, а не со слагом: у Twitch адрес часто
+    короче названия (/dawnwalker → «The Blood of Dawnwalker»), и сверка со
+    слагом отвергала правильные ссылки."""
+    import time
+
+    want = category_slug(name)
+    if not want:
         return None
-    url = TWITCH_DIRECTORY + slug
-    try:
-        resp = SESSION.get(url, headers=BROWSER_HEADERS, timeout=20)
-        resp.raise_for_status()
-    except requests.RequestException:
-        return None
-    # Twitch не объявляет charset в заголовке, и requests угадывает latin-1:
-    # «Pokémon GO» превращается в «PokÃ©mon GO», слаг не совпадает, ссылка
-    # молча признаётся неподтверждённой.
-    resp.encoding = "utf-8"
-    m = OG_TITLE_RE.search(resp.text)
-    if not m:
-        return None
-    # og:title выглядит как «Pokémon GO - Twitch» — сверяем начало с именем.
-    title = m.group(1).rsplit(" - Twitch", 1)[0].strip()
-    return url if category_slug(title) == slug else None
+    for slug in _slug_candidates(name):
+        url = TWITCH_DIRECTORY + slug
+        try:
+            resp = SESSION.get(url, headers=BROWSER_HEADERS, timeout=20)
+            resp.raise_for_status()
+        except requests.RequestException:
+            continue
+        # Twitch не объявляет charset, и requests угадывает latin-1:
+        # «Pokémon GO» превращается в «PokÃ©mon GO», слаг не совпадает.
+        resp.encoding = "utf-8"
+        m = OG_TITLE_RE.search(resp.text)
+        if not m:
+            time.sleep(3)
+            continue
+        # og:title приходит с HTML-сущностями: «Co-working &amp; Studying».
+        # Без раскодирования «&amp;» превращается в «amp» и слаг не совпадает.
+        title = html.unescape(m.group(1)).rsplit(" - Twitch", 1)[0].strip()
+        # Сверяем без ведущего артикля: шаблон «in the X category» его съедает,
+        # и из «in The Blood of Dawnwalker category» мы получаем имя без «The»,
+        # тогда как Twitch зовёт категорию полностью.
+        if _no_article(category_slug(title)) == _no_article(want):
+            return url
+        time.sleep(2)
+    return None
+
+
+MAX_NEW_CATEGORIES_PER_RUN = 12
+MAX_VERIFY_TRIES = 4
 
 
 def resolve_category_urls(names):
     """{имя категории: проверенный URL}. Результат кэшируется на диске, включая
     отрицательный (url=null): без этого каждый refresh перепроверял бы одни и те
-    же категории, а неудачные — бесконечно."""
+    же категории, а неудачные — бесконечно.
+
+    Пишем ПОСЛЕ КАЖДОЙ проверки и берём не больше MAX_NEW_CATEGORIES_PER_RUN
+    новых имён за прогон. Первая версия копила всё в памяти и сохраняла в конце:
+    57 категорий с паузами между запросами занимали минуты, упирались в
+    TimeoutStartSec юнита, и вся работа терялась — файл не появлялся вообще, а
+    следующий refresh начинал заново."""
     try:
         cache = json.loads(CATEGORY_URLS_FILE.read_text())
     except (OSError, ValueError):
         cache = {}
-    import time
+    # Отрицательный ответ НЕ окончателен: Twitch троттлит частые запросы, отдавая
+    # 200 без og:title, и такая «неудача» намертво оседала в кэше — Overwatch,
+    # Brawlhalla и DJs числились неподтверждёнными, хотя категории существуют.
+    # Значение в кэше: строка = подтверждённый URL, число = сколько раз не вышло.
+    def unresolved(name):
+        v = cache.get(name)
+        if isinstance(v, str):
+            return False
+        if name not in cache:
+            return True
+        return isinstance(v, int) and v < MAX_VERIFY_TRIES
 
-    changed = False
-    for name in names:
-        if not name or name in cache:
-            continue
-        # Пауза и повтор: подряд идущие запросы Twitch троттлит, отдавая 200 без
-        # og:title. Без этого «Pokémon UNITE» и «Diablo» ложно признавались
-        # неподтверждёнными, хотя поодиночке проверяются нормально. Проверка
-        # редкая (результат кэшируется), так что медлительность не мешает.
+    todo = [n for n in names if n and unresolved(n)]
+    for name in todo[:MAX_NEW_CATEGORIES_PER_RUN]:
         url = verify_category_url(name)
-        if url is None:
-            time.sleep(2)
-            url = verify_category_url(name)
-        cache[name] = url
-        changed = True
-        time.sleep(1)
-    if changed:
-        atomic_write_json(CATEGORY_URLS_FILE, cache)
-    return {k: v for k, v in cache.items() if v}
+        if url:
+            cache[name] = url
+        else:
+            prev = cache.get(name)
+            cache[name] = (prev if isinstance(prev, int) else 0) + 1
+        try:
+            atomic_write_json(CATEGORY_URLS_FILE, cache)
+        except OSError as e:
+            print(f"не смог сохранить category_urls: {e}", file=sys.stderr)
+            break
+    if len(todo) > MAX_NEW_CATEGORIES_PER_RUN:
+        print(f"категорий к проверке ещё {len(todo) - MAX_NEW_CATEGORIES_PER_RUN} — "
+              "доберём следующими прогонами", file=sys.stderr)
+    return {k: v for k, v in cache.items() if isinstance(v, str)}
 
 
 def download_image(url: str) -> bool:

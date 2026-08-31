@@ -298,6 +298,30 @@ _CATEGORY_URLS = {}
 _HELIX = {}
 
 
+def _cat_key(name):
+    """Ключ для поиска в кэше ссылок — без регистра и ведущего артикля.
+
+    Одну и ту же категорию источники называют по-разному: SD пишет «The Blood of
+    Dawnwalker», а из описания Twitch («in The Blood of Dawnwalker category»)
+    шаблон достаёт её уже без «The». Точный поиск по строке промахивался, и
+    ссылка не подставлялась, хотя в кэше лежала."""
+    s = (name or "").strip().lower()
+    for art in ("the ", "a ", "an "):
+        if s.startswith(art):
+            return s[len(art):]
+    return s
+
+
+def category_url_for(name):
+    if not name:
+        return None
+    want = _cat_key(name)
+    for k, v in _CATEGORY_URLS.items():
+        if _cat_key(k) == want:
+            return v
+    return None
+
+
 def category_href(cats):
     """Ссылка на директорию категории: сначала href от SD (если вернёт его
     обратно), иначе — наш проверенный URL по имени."""
@@ -306,7 +330,7 @@ def category_href(cats):
     c = cats[0] or {}
     if c.get("href"):
         return c["href"]
-    return _CATEGORY_URLS.get(_category_name(cats))
+    return category_url_for(_category_name(cats))
 
 
 def _category_fields(cats):
@@ -907,7 +931,7 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_l
                 "start": None, "end": None,
                 "cost": None, "condition": hx_cond,
                 "id": None, "all_ids": [],
-                "category_href": _CATEGORY_URLS.get(cat) if cat else None,
+                "category_href": category_url_for(cat),
                 "box_art_url": None,
                 "twitch_link": ({"label": login, "url": f"https://www.twitch.tv/{login}"}
                                 if login else (twitch_links or {}).get(set_id)),
@@ -1036,7 +1060,7 @@ def apply_helix_info(windows, helix, records_ids=None):
                 if cat:
                     w["game"] = cat
                     if not w.get("category_href"):
-                        w["category_href"] = _CATEGORY_URLS.get(cat)
+                        w["category_href"] = category_url_for(cat)
             # Стоимость из того же описания: «subscribing or gifting» — платно,
             # «watching» — бесплатно. Иначе у значков, чьё окно построено из дат
             # события (там costs нет), пилюля цены не появлялась вовсе.
@@ -1282,7 +1306,7 @@ def add_orphan_event_records(records, snapshot, now):
             "cost": "paid" if (paid and not free) else ("free" if free else None),
             "condition": _condition_from_content(raw),
             "id": None, "all_ids": [],
-            "category_href": _CATEGORY_URLS.get(cat) if cat else None,
+            "category_href": category_url_for(cat),
             "box_art_url": None,
             "twitch_link": (snapshot.get("twitch_links") or {}).get(slug),
             "channel_count": 0, "offline_event": False,
