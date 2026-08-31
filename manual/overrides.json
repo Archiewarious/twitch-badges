@@ -49,17 +49,5 @@
     "start": "2026-08-17",
     "end": "2026-10-01",
     "source": "официальная схема Twitch (ветка Sub → Mystery Container); конец окна — событие SD «Evolution badges...»: значки нужно открыть до 1 октября"
-  },
-  "nasa-roman": {
-    "group": "NASA Nancy Grace Roman Space Telescope Launch",
-    "condition": "Смотреть трансляцию запуска на канале NASA",
-    "cost": "free",
-    "start": "2026-08-30",
-    "end": null,
-    "link": {
-      "label": "NASA",
-      "url": "https://www.twitch.tv/nasa"
-    },
-    "source": "страница значка SD «awarded on August 30th 2026, added to promote the launch» + описание значка в Twitch API «awarded to users who watched the launch»; канал — тот же, что у nasa-artemis-ii. Длительность просмотра НЕ указываем: у Artemis было 60 минут, но для Roman это ниоткуда не подтверждено"
   }
 }
