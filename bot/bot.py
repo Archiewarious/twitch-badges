@@ -362,10 +362,16 @@ def how_short(r):
             return f"📍 Условия уточняются · у участвующих стримеров{grp_tail}"
         return "📍 Условия уточняются"
 
-    if url:
+    game = (r.get("window") or {}).get("game")
+    if url and not (kind == "external" and game):
         prep = {"category": "в категории", "event": "на каналах события",
                 "channel": "у стримера", "external": "—"}[kind]
         return f'📍 {esc(cond)} {prep} <a href="{esc(url)}">{esc(label)}</a>'
+    # Категория известна, а проверенной ссылки на неё нет (Twitch называет её
+    # иначе — «Tom Clancy\'s Rainbow Six Siege»). Тогда пишем категорию текстом:
+    # вести читателя вместо неё на страницу магазина — обман, значок там не дают.
+    if game:
+        return f"📍 {esc(cond)} в категории {esc(game)}"
     many = categories_line(r)
     if many:
         return f"📍 {esc(cond)} {many}"

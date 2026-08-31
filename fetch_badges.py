@@ -86,6 +86,10 @@ import re  # noqa: E402
 # них нет ни категорий, ни каналов. Без разбора пост выходил «Подписка или гифт»
 # без единого слова о месте (так было у Sorcerer Rogier ELDEN RING).
 CATEGORY_IN_DESC_RE = re.compile(r"\bin the\s+(.+?)\s+category\b", re.I)
+# Второй шаблон: «gifting a sub to a Diablo streamer during BlizzCon 2026».
+# Без него у Diablo вместо категории Twitch в пост шла ссылка на blizzcon.com —
+# сайт мероприятия, где значок не выдают.
+CATEGORY_STREAMER_RE = re.compile(r"\bto an?\s+(.{2,40}?)\s+streamer\b", re.I)
 # «watching /PlaqueBoyMax during…» — канал прямо в описании.
 CHANNEL_IN_DESC_RE = re.compile(r"(?:^|\s)/([A-Za-z0-9_]{3,25})\b")
 
@@ -110,7 +114,15 @@ def badge_name_from_description(desc: str):
 def category_from_description(desc: str):
     """Название категории Twitch из описания значка, иначе None."""
     m = CATEGORY_IN_DESC_RE.search(desc or "")
-    return m.group(1).strip() if m else None
+    if m:
+        return m.group(1).strip()
+    m = CATEGORY_STREAMER_RE.search(desc or "")
+    if m:
+        name = m.group(1).strip()
+        # «to a streamer in the …» ловится первым шаблоном; сюда попадают только
+        # конструкции «to a <категория> streamer», но подстрахуемся.
+        return None if name.lower() in ("streamer", "twitch") else name
+    return None
 
 
 def channel_from_description(desc: str):

@@ -294,6 +294,8 @@ def strip_accents(s):
 # Глобальная — чтобы не тащить их параметром через всю цепочку построителей окон;
 # заполняется один раз в build_records.
 _CATEGORY_URLS = {}
+# Описания Twitch — нужны и в classify (значок без дат, но с известным условием).
+_HELIX = {}
 
 
 def category_href(cats):
@@ -883,6 +885,38 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_l
             return {"status": "upcoming", "window": window, "group": None,
                     "note_kind": None}
 
+    # То же самое, но по описанию TWITCH: у SD не осталось ни дат, ни kind, а
+    # Helix при этом знает и условие, и категорию. 31.08.2026 SD переписал
+    # описания пяти значков, потеряв даты (в структурные поля их ещё не вписал), —
+    # и все пятеро замолчали, хотя раздача идёт и мы знаем, что и где делать.
+    # Даты не выдумываем: пост честно скажет «даты уточняются».
+    hx = (_HELIX or {}).get(set_id) or {}
+    hx_cond = condition_from_helix(hx.get("description"))
+    if hx_cond:
+        seen = badge_first_seen(catalog_badge)
+        try:
+            added_dt = datetime.fromisoformat(seen.replace("Z", "+00:00")) if seen else None
+        except ValueError:
+            added_dt = None
+        if added_dt and (now - added_dt).days <= NO_DATE_ANNOUNCE_DAYS:
+            import fetch_badges
+            cat = fetch_badges.category_from_description(hx.get("description"))
+            login = fetch_badges.channel_from_description(hx.get("description"))
+            window = {
+                "event_title": "", "group": None, "game": cat or "",
+                "start": None, "end": None,
+                "cost": None, "condition": hx_cond,
+                "id": None, "all_ids": [],
+                "category_href": _CATEGORY_URLS.get(cat) if cat else None,
+                "box_art_url": None,
+                "twitch_link": ({"label": login, "url": f"https://www.twitch.tv/{login}"}
+                                if login else (twitch_links or {}).get(set_id)),
+                "channel_count": 0, "offline_event": False, "dates_coarse": True,
+                "dates_unknown": True,
+            }
+            return {"status": "upcoming", "window": window, "group": None,
+                    "note_kind": None}
+
     return {"status": "ended", "window": None, "group": None, "note_kind": "unknown"}
 
 
@@ -1021,6 +1055,78 @@ def apply_helix_info(windows, helix, records_ids=None):
             if not w.get("twitch_link") and url.startswith("https://"):
                 w["twitch_link"] = {"label": info.get("title") or "на Twitch", "url": url}
     return windows
+
+
+KNOWN_WINDOWS_FILE = DATA_DIR / "known_windows.json"
+KNOWN_WINDOW_KEEP_DAYS = 14
+
+
+def load_known_windows():
+    try:
+        return json.loads(KNOWN_WINDOWS_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def apply_known_windows(windows, known, now):
+    """Возвращает даты, которые источник когда-то отдавал, а теперь потерял.
+
+    31.08.2026 StreamDatabase убрал даты из ТЕКСТА описания («This badge was
+    awarded between September 23rd and October 13th» → «This badge was added to
+    promote…»), а в структурные поля их ещё не вписал. Пять значков разом стали
+    «нет дат — не знаю, как классифицировать», хотя утром того же дня мы окно
+    знали и публиковали. Данные не изменились — их временно нет у источника.
+
+    Забывать в такой ситуации хуже, чем помнить: значок продолжает выдаваться,
+    а канал молчит. Берём запомненное ТОЛЬКО когда живых дат нет вовсе, и
+    храним ограниченное время — если кампания давно кончилась, воскрешать её
+    не надо."""
+    for set_id, wins in windows.items():
+        remembered = known.get(set_id)
+        if not remembered:
+            continue
+        for w in wins:
+            if w.get("start") or w.get("end"):
+                continue
+            start = parse_dt(*(remembered.get("start") or "").split("T")[:2]) \
+                if remembered.get("start") else None
+            end = parse_dt(*(remembered.get("end") or "").split("T")[:2]) \
+                if remembered.get("end") else None
+            if not start and not end:
+                continue
+            newest = end or start
+            if newest and (now - newest).days > KNOWN_WINDOW_KEEP_DAYS:
+                continue
+            w["start"], w["end"] = start, end
+            w["dates_remembered"] = True
+    return windows
+
+
+def save_known_windows(records):
+    """Запоминает окна, которые источник отдаёт СЕЙЧАС. Пишется только из
+    refresh (generate_site.main) — бот файл лишь читает, писателей один."""
+    known = load_known_windows()
+    for r in records:
+        w = r.get("window") or {}
+        if w.get("dates_remembered"):
+            continue                      # не перезаписываем память самой памятью
+        if not (w.get("start") or w.get("end")):
+            continue
+        known[r["set_id"]] = {
+            "start": w["start"].strftime("%Y-%m-%dT%H:%M") if w.get("start") else None,
+            "end": w["end"].strftime("%Y-%m-%dT%H:%M") if w.get("end") else None,
+            "title": r.get("title"),
+        }
+    try:
+        atomic_write_json_local(KNOWN_WINDOWS_FILE, known)
+    except OSError as e:
+        print(f"не смог сохранить known_windows: {e}", file=sys.stderr)
+    return known
+
+
+def atomic_write_json_local(path, data):
+    import fetch_streamdb as collector
+    collector.atomic_write_json(path, data)
 
 
 def load_overrides():
@@ -1226,6 +1332,8 @@ def build_records(snapshot):
     now = datetime.now(timezone.utc)
     global _CATEGORY_URLS
     _CATEGORY_URLS = snapshot.get("category_urls") or {}
+    global _HELIX
+    _HELIX = snapshot.get("helix") or {}
     windows_by_id = collect_windows_by_set_id(
         snapshot.get("events", []), snapshot.get("twitch_links"))
     # Приоритет источников окна (более точный НЕ перезаписывается):
@@ -1243,6 +1351,8 @@ def build_records(snapshot):
                                    event_dates_by_set_id(snapshot.get("events", [])))
     # Второй автоматический источник — описание значка у Twitch (Helix).
     windows_by_id = apply_helix_info(windows_by_id, snapshot.get("helix"))
+    # Память: возвращаем даты, которые источник когда-то отдавал, а теперь потерял.
+    windows_by_id = apply_known_windows(windows_by_id, load_known_windows(), now)
     # Человек — последний и главный источник: перекрывает всё, что выведено выше.
     windows_by_id = apply_manual_overrides(windows_by_id, load_overrides())
     raw = []
@@ -1664,6 +1774,7 @@ def main():
     try:
         snapshot = json.loads(input_data_file().read_text())
         records = build_records(snapshot)
+        save_known_windows(records)
         sync_images(records)
         OUT_DIR.mkdir(exist_ok=True)
         OUT_FILE.write_text(build_html(snapshot))
