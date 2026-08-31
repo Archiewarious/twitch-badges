@@ -201,7 +201,7 @@ def page_changed(build_id, snapshot, set_ids):
             added_by_id[sid] = collector._badge_added_at(b)
     for sid in set_ids:
         try:
-            text = collector.fetch_badge_page_text(build_id, sid)
+            text = collector.badge_page_text(collector.fetch_badge_page(build_id, sid))
         except Exception:
             continue
         if not text:

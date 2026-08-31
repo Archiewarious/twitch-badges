@@ -249,14 +249,32 @@ def parse_badge_page_text(text, added_iso=None):
     }
 
 
-def fetch_badge_page_text(build_id: str, set_id: str):
-    """Текст описания со страницы бейджа StreamDatabase (contexts[].pending_content
-    или .content). Одна загрузка — из неё достаём и ссылку, и даты."""
+def fetch_badge_page(build_id: str, set_id: str):
+    """Объект бейджа со страницы StreamDatabase (одна загрузка на бейдж)."""
     try:
         data = fetch_next_data(build_id, f"twitch/global-badges/{set_id}/1")
     except requests.RequestException:
         return None
-    b = data.get("pageProps", {}).get("twitchGlobalBadge", {})
+    return (data.get("pageProps") or {}).get("twitchGlobalBadge") or {}
+
+
+def page_availability(badge):
+    """ОПУБЛИКОВАННЫЕ записи availability со страницы бейджа.
+
+    С августа 2026 SD переносит сюда всё: «badge timeframe/availability and unlock
+    information is now moving to its own availability tab». Мы же читали
+    availability ТОЛЬКО внутри events.json, а со страницы брали лишь текст
+    описания — и теряли структурные данные там, где у события дат нет.
+    Так молчали DRON-E и Diablo: события «Wasteland Circuit»/«BlizzCon 2026»
+    заведены без дат, а на страницах значков лежали и окно, и условие в steps.
+
+    hidden — черновик модератора, его не берём (см. collect_windows_by_set_id)."""
+    return [av for av in (badge.get("availability") or []) if not av.get("hidden")]
+
+
+def badge_page_text(badge):
+    """Текст описания (contexts[].pending_content или .content)."""
+    b = badge or {}
     for ctx in b.get("contexts") or []:
         for field in ("pending_content", "content"):
             if ctx.get(field):
@@ -287,8 +305,15 @@ def extract_link_from_text(text):
     return fallback
 
 
-# Насколько свежие бейджи вне events.json ещё сканируем (ограничивает число запросов)
-PAGE_SCAN_DAYS = 21
+# Насколько свежие бейджи вне events.json ещё сканируем (ограничивает число запросов).
+# ДОЛЖНО быть не меньше BLINDSPOT_DAYS в боте (30): иначе получается абсурд —
+# про значок ещё 30 дней приходит тревога «молчит, не знаю, как классифицировать»,
+# а искать его данные мы перестали на 21-м дне. Так вышло с тройкой Audible
+# (EnchantedBigBoiBoxers, PrincessDonutBrown/Pink, заведены 06.08): SD удалил
+# завершившееся событие, а на СТРАНИЦЕ значка всё лежало — окно 13–27.08 и условие
+# «2 подписки или 2 гифта». Мы просто перестали туда ходить, и тревога ныла
+# впустую про давно закрытую кампанию. Разница в цене мала: 18 страниц вместо 14.
+PAGE_SCAN_DAYS = 32
 
 
 def _badge_added_at(badge):
@@ -322,7 +347,14 @@ def collect_badge_pages(build_id, events, badges):
             has_cond = any(av.get(f) for av in avs
                            for f in ("subscription", "subscription_gift", "bits",
                                      "watch", "clip", "twitchcon", "turbo"))
-            if not any(av.get("categories") for av in avs) or not has_cond:
+            # ...и ДАТЫ. Без этой проверки страница не запрашивалась, если у
+            # события уже есть категория и условие, — а даты при этом могли
+            # отсутствовать: у DRON-E и Diablo (30.08.2026) в событии лежала
+            # запись с categories/steps/costs, но без start_at_date, тогда как на
+            # странице значка окно было. Значок оставался «нет дат — не знаю, как
+            # классифицировать», и тревога о молчащих ныла впустую.
+            has_dates = any(av.get("start_at_date") or av.get("end_at_date") for av in avs)
+            if not any(av.get("categories") for av in avs) or not has_cond or not has_dates:
                 need.setdefault(sid, None)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=PAGE_SCAN_DAYS)
@@ -339,9 +371,17 @@ def collect_badge_pages(build_id, events, badges):
         except ValueError:
             continue
 
-    links, infos = {}, {}
+    links, infos, avails = {}, {}, {}
     for sid, added_iso in need.items():
-        text = fetch_badge_page_text(build_id, sid)
+        badge = fetch_badge_page(build_id, sid)
+        if badge is None:
+            continue
+        # Структурные данные со страницы — приоритетнее разбора текста: именно
+        # туда SD переносит окна и условия (page_availability).
+        avs = page_availability(badge)
+        if avs:
+            avails[sid] = avs
+        text = badge_page_text(badge)
         if not text:
             continue
         link = extract_link_from_text(text)
@@ -350,7 +390,7 @@ def collect_badge_pages(build_id, events, badges):
         info = parse_badge_page_text(text, added_iso)
         if info:
             infos[sid] = info
-    return links, infos
+    return links, infos, avails
 
 
 def download_image(url: str) -> bool:
@@ -407,7 +447,7 @@ def main() -> int:
     # Один проход по страницам бейджей: ссылки Twitch + разбор описаний (даты/условие
     # для бейджей, которых нет в events.json — La Velada и т.п.).
     # Использует av.channels — ДО обрезки ниже.
-    twitch_links, page_info = collect_badge_pages(build_id, events, badge_list)
+    twitch_links, page_info, page_avail = collect_badge_pages(build_id, events, badge_list)
 
     # Экономия хранения: списки участников (EWC ~1387 стримеров и т.п.) — это ~90%
     # снапшота, а боту/сайту нужен только ФАКТ наличия каналов (детали — логины/аватары —
@@ -431,6 +471,7 @@ def main() -> int:
         "events": events,
         "twitch_links": twitch_links,
         "page_info": page_info,
+        "page_availability": page_avail,
         "helix": helix,
     }
 
@@ -439,9 +480,10 @@ def main() -> int:
     atomic_write_json(INCOMING_FILE, snapshot)
 
     helix_note = f", {len(helix)} описаний Twitch" if helix else ", Helix выключен (нет ключей)"
+    avail_note = f", {len(page_avail)} availability со страниц"
     print(f"OK: {len(badge_list)} бейджей, {len(events)} ивентов, "
           f"{len(twitch_links)} ссылок, {len(page_info)} описаний с датами"
-          f"{helix_note} → {INCOMING_FILE.name} ({snapshot['fetched_at']})")
+          f"{avail_note}{helix_note} → {INCOMING_FILE.name} ({snapshot['fetched_at']})")
     return 0
 
 

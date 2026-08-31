@@ -562,6 +562,43 @@ def add_catalog_windows(windows, badges, page_info=None, twitch_links=None):
     return windows
 
 
+def add_page_availability_windows(windows, page_avail, twitch_links=None):
+    """ФОЛБЭК A0: структурная availability СО СТРАНИЦЫ значка.
+
+    Приоритет сразу после events[].availability и выше разбора текста: это те же
+    машинные поля, просто SD с августа 2026 наполняет их на странице значка, а в
+    событие может не проставить ничего. DRON-E и Diablo молчали именно так —
+    события «Wasteland Circuit» и «BlizzCon 2026» заведены без дат, а на страницах
+    лежали и окно, и условие. Скрытые записи сюда не попадают (отфильтрованы в
+    fetch_streamdb.page_availability)."""
+    for set_id, avs in (page_avail or {}).items():
+        if set_id in MANUAL_SET_IDS or windows.get(set_id):
+            continue
+        for av in avs:
+            start = parse_dt(av.get("start_at_date"), av.get("start_at_time"))
+            end = parse_dt(av.get("end_at_date"), av.get("end_at_time"))
+            if not start and not end:
+                continue
+            cats = av.get("categories") or []
+            windows[set_id] = [{
+                "event_title": "", "group": None,
+                "game": _category_name(cats),
+                "start": start, "end": end,
+                "cost": ", ".join(av.get("costs") or []),
+                "condition": describe_condition_ru(av),
+                "id": av.get("_id"), "all_ids": [],
+                "category_href": cats[0].get("href") if cats else None,
+                "box_art_url": _category_box_art(cats),
+                "twitch_link": (twitch_links or {}).get(set_id),
+                "channel_count": len(av.get("channels") or []),
+                "offline_event": bool(av.get("twitchcon")),
+                "dates_coarse": not (av.get("start_at_time") or av.get("end_at_time")),
+                "from_page_availability": True,
+            }]
+            break
+    return windows
+
+
 def add_page_windows(windows, page_info, badges, twitch_links=None):
     """Достраивает окна для бейджей, которых НЕТ в events.json (у SD там пусто),
     но чьё описание на странице бейджа удалось разобрать (даты + условие).
@@ -1033,6 +1070,8 @@ def build_records(snapshot):
     page_info = snapshot.get("page_info")
     links = snapshot.get("twitch_links")
     badges = snapshot.get("badges", [])
+    windows_by_id = add_page_availability_windows(
+        windows_by_id, snapshot.get("page_availability"), links)
     windows_by_id = add_page_windows(windows_by_id, page_info, badges, links)
     windows_by_id = add_event_windows(windows_by_id, snapshot.get("events", []), page_info, links)
     windows_by_id = add_event_content_windows(windows_by_id, snapshot.get("events", []), badges, page_info, links)
