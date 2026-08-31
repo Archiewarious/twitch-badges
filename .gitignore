@@ -14,5 +14,5 @@ __pycache__/
 *.log
 bot/*.log
 
-# --- legacy: старый Helix-фетчер, заменён на fetch_streamdb.py ---
-fetch_badges.py
+# fetch_badges.py БОЛЬШЕ НЕ legacy: с 31.08.2026 это второй источник данных
+# (Helix), его импортирует fetch_streamdb.py — без него свежий клон не соберётся.
