@@ -120,9 +120,100 @@ def tier_ru(n):
     return f"{n} уровня" if n else "неизвестного уровня"
 
 
+def _subs_ru(amount):
+    """«подписку» / «2 подписки» — с правильным склонением. Раньше выходило
+    «оформить 2 подписку»: количество подставлялось, а слово не склонялось."""
+    if not amount or amount <= 1:
+        return "подписку"
+    return f"{amount} {plural(amount, 'подписку', 'подписки', 'подписок')}"
+
+
+def _step_ru(step):
+    """Один шаг из steps → русская формулировка. Незнакомый тип → None."""
+    t = step.get("type")
+    if t == "watch":
+        mins = step.get("watch_minutes")
+        days = step.get("watch_days")
+        text = f"смотреть эфир {ru_duration_minutes(mins)}" if mins else "смотреть эфир"
+        if days and days > 1:
+            # Ключевая деталь, которой нет в плоских полях: у покемонов нужно
+            # именно 3 РАЗНЫХ дня, а не 60 минут подряд.
+            text += f" в {days} {plural(days, 'разный день', 'разных дня', 'разных дней')}"
+        return text
+    if t == "subscription":
+        return f"оформить {_subs_ru(step.get('subscription_amount'))} {tier_ru(step.get('subscription_tier'))}"
+    if t == "subscription_gift":
+        return f"подарить {_subs_ru(step.get('subscription_gift_amount'))} {tier_ru(step.get('subscription_gift_tier'))}"
+    if t == "twitchcon":
+        days = step.get("twitchcon_days")
+        return (f"купить билет на офлайн-мероприятие TwitchCon ({days} "
+                f"{plural(days, 'день', 'дня', 'дней')})" if days
+                else "купить билет на офлайн-мероприятие TwitchCon")
+    if t == "bits":
+        return "потратить Bits"
+    if t == "clip":
+        return "создать клип"
+    if t == "turbo":
+        return "оформить подписку Turbo"
+    return None
+
+
+PAID_STEP_TYPES = {"subscription", "subscription_gift", "bits", "twitchcon", "turbo"}
+
+
+def cost_from_steps(steps, fallback):
+    """Стоимость по steps: нужен ли хоть на одном этапе платёж.
+
+    Точнее списка costs у SD: там перечислены стоимости ВСЕЙ кампании, поэтому у
+    Bulbasaur выходило «free, paid» (в наборе есть и бесплатный Pichu), хотя сам
+    значок требует подписку. Строка «free, paid» не совпадает ни с одной меткой,
+    и пилюля цены просто не отображалась."""
+    if not steps:
+        return fallback
+    types = {(st or {}).get("type") for stage in steps for st in (stage or [])}
+    if not types:
+        return fallback
+    return "paid" if types & PAID_STEP_TYPES else "free"
+
+
+def describe_steps_ru(steps):
+    """Условие из структурного steps — самого точного, что даёт StreamDatabase.
+
+    Формат: внешний список — ЭТАПЫ (нужно выполнить все, по порядку), внутренний —
+    АЛЬТЕРНАТИВЫ внутри этапа. Так у Bulbasaur лежит
+    [[подписка, гифт], [смотреть 20 мин × 3 дня]] = «оформить или подарить подписку,
+    затем смотреть...». Плоские поля availability этой структуры не передают: из них
+    выходило просто «смотреть эфир 20 минут», без «в 3 разных дня» и без порядка.
+
+    Незнакомый тип шага делает ВЕСЬ разбор недействительным (None), чтобы не
+    выдать читателю половину условия за целое — пусть лучше сработает фолбэк на
+    describe_condition_ru."""
+    if not steps:
+        return None
+    stages = []
+    for stage in steps:
+        alts = []
+        for step in stage or []:
+            text = _step_ru(step or {})
+            if text is None:
+                return None
+            alts.append(text)
+        if alts:
+            stages.append(" или ".join(alts))
+    if not stages:
+        return None
+    text = ", затем ".join(stages)
+    return text[0].upper() + text[1:]
+
+
 def describe_condition_ru(av):
     """Строит русское описание условия из структурных полей StreamDatabase,
-    а не переводом английского objective — так честнее для 'unknown'-полей."""
+    а не переводом английского objective — так честнее для 'unknown'-полей.
+
+    steps приоритетнее: там есть и порядок этапов, и «в N разных дней»."""
+    from_steps = describe_steps_ru(av.get("steps"))
+    if from_steps:
+        return from_steps
     parts = []
     if av.get("watch"):
         mins = av.get("watch_minutes")
@@ -130,13 +221,11 @@ def describe_condition_ru(av):
 
     sub_parts = []
     if av.get("subscription"):
-        amount = av.get("subscription_amount")
-        cnt = f"{amount} " if amount and amount > 1 else ""
-        sub_parts.append(f"оформить {cnt}подписку {tier_ru(av.get('subscription_tier'))}")
+        sub_parts.append(f"оформить {_subs_ru(av.get('subscription_amount'))} "
+                         f"{tier_ru(av.get('subscription_tier'))}")
     if av.get("subscription_gift"):
-        gamount = av.get("subscription_gift_amount")
-        cnt = f"{gamount} " if gamount and gamount > 1 else ""
-        sub_parts.append(f"подарить {cnt}подписку {tier_ru(av.get('subscription_gift_tier'))}")
+        sub_parts.append(f"подарить {_subs_ru(av.get('subscription_gift_amount'))} "
+                         f"{tier_ru(av.get('subscription_gift_tier'))}")
     if sub_parts:
         parts.append(" или ".join(sub_parts))
 
@@ -277,7 +366,7 @@ def collect_windows_by_set_id(events, twitch_links=None):
                     "game": game,
                     "start": start,
                     "end": end,
-                    "cost": ", ".join(av.get("costs") or []),
+                    "cost": cost_from_steps(av.get("steps"), ", ".join(av.get("costs") or [])),
                     "condition": describe_condition_ru(av),
                     # Билет на офлайн-мероприятие (TwitchCon и т.п.) — не "Twitch Drop"
                     # в смысле бота/канала: нельзя получить действием на Twitch, нужно
@@ -549,7 +638,7 @@ def add_catalog_windows(windows, badges, page_info=None, twitch_links=None):
             windows[set_id] = [{
                 "event_title": "", "group": None, "game": "",
                 "start": start, "end": end,
-                "cost": ", ".join(av.get("costs") or []),
+                "cost": cost_from_steps(av.get("steps"), ", ".join(av.get("costs") or [])),
                 "condition": describe_condition_ru(av),
                 "id": av.get("_id"), "all_ids": [], "category_href": None,
                 "box_art_url": None,
@@ -584,7 +673,7 @@ def add_page_availability_windows(windows, page_avail, twitch_links=None):
                 "event_title": "", "group": None,
                 "game": _category_name(cats),
                 "start": start, "end": end,
-                "cost": ", ".join(av.get("costs") or []),
+                "cost": cost_from_steps(av.get("steps"), ", ".join(av.get("costs") or [])),
                 "condition": describe_condition_ru(av),
                 "id": av.get("_id"), "all_ids": [],
                 "category_href": cats[0].get("href") if cats else None,
