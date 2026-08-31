@@ -1,0 +1,16 @@
+[Unit]
+Description=Check StreamDatabase data format for drift
+After=network-online.target
+Wants=network-online.target
+OnFailure=tg-alert@%n.service
+
+[Service]
+Type=oneshot
+User=archie
+WorkingDirectory=/home/archie/projects/twitch-badges
+# --snapshot: проверяем ЗАКОММИЧЕННЫЙ снапшот, а не ходим в сеть отдельно.
+# Так проверка видит ровно те данные, на которых работает бот, и не добавляет
+# нагрузки на SD поверх опроса раз в 2 минуты.
+ExecStart=/home/archie/projects/twitch-badges/venv/bin/python /home/archie/projects/twitch-badges/check_format.py --snapshot
+TimeoutStartSec=120
+MemoryMax=256M
