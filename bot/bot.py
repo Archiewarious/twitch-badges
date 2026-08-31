@@ -52,7 +52,7 @@ from telegram import (  # noqa: E402
     Update,
 )
 from telegram.constants import ParseMode  # noqa: E402
-from telegram.error import NetworkError, TelegramError  # noqa: E402
+from telegram.error import Conflict, NetworkError, TelegramError  # noqa: E402
 from telegram.ext import (  # noqa: E402
     Application,
     ContextTypes,
@@ -109,6 +109,10 @@ PAID_WORDS = {"paid", "платно", "платные", "плат"}
 SOON_WORDS = {"soon", "скоро"}
 
 _cache = {"records": None, "mtime": None}
+# Окно и порог для Conflict-ошибок: одиночная — штатный артефакт перезапуска.
+CONFLICT_WINDOW = 600
+CONFLICT_ALERT_AFTER = 3
+_conflicts = []
 _publish_fail_streak = 0   # тиков подряд, когда постить было что, но ничего не ушло
 
 
@@ -1211,6 +1215,30 @@ async def on_error(update, context):
     # Будить владельца ради него нельзя: это шум, который заглушит настоящие
     # исключения. Настоящая потеря связи всё равно всплывёт через heartbeat.
     if isinstance(err, NetworkError):
+        return
+    # Conflict — «кто-то ещё опрашивает тем же токеном». Одиночный вспыхивает
+    # штатно: при перезапуске старое соединение getUpdates какое-то время живёт
+    # на стороне Telegram, и новое застаёт его. PTB переживает это сам, бот
+    # продолжает работать — будить владельца незачем. А вот ПОВТОРЯЮЩИЙСЯ
+    # означает реально вторую живую копию: вот тогда и зовём.
+    if isinstance(err, Conflict):
+        now = datetime.now(timezone.utc)
+        _conflicts.append(now)
+        while _conflicts and (now - _conflicts[0]).total_seconds() > CONFLICT_WINDOW:
+            _conflicts.pop(0)
+        if len(_conflicts) < CONFLICT_ALERT_AFTER:
+            log.warning("Conflict %d/%d за %d мин — считаю разовым, молчу",
+                        len(_conflicts), CONFLICT_ALERT_AFTER, CONFLICT_WINDOW // 60)
+            return
+        await send_alert(
+            "bot-conflict",
+            f"бот опрашивается ДВАЖДЫ ({len(_conflicts)} конфликта за "
+            f"{CONFLICT_WINDOW // 60} мин)",
+            "Тем же токеном пользуется вторая копия — посты и ответы будут теряться "
+            "случайным образом.\n"
+            "Найти:   ps -eo pid,etimes,cmd | grep bot.py\n"
+            "Обычные причины: бот запущен ещё где-то (другой сервер/ноутбук) либо "
+            "остался процесс после ручного запуска.")
         return
     await send_alert(
         "bot-exception", "необработанное исключение в боте",
