@@ -572,6 +572,8 @@ def channel_header(kind, r):
         return f'▶️ <b>Стартовало — можно получать сейчас!</b>\n{name}'
     if kind == "ending":
         return f'⏳ <b>Последний день! Успей получить</b>\n{name}'
+    if kind == "finished":
+        return f'🏁 <b>Раздача завершилась</b>\n{name} — больше не получить'
     return name
 
 
@@ -642,6 +644,8 @@ def album_header(kind, group, n):
         return f'📝 <b>Стало известно, как получить</b>{tail}'
     if kind == "started":
         return f'▶️ <b>Стартовало — можно получать сейчас!</b>{tail}'
+    if kind == "finished":
+        return f'🏁 <b>Раздача завершилась</b>{tail} — больше не получить'
     return f'⏳ <b>Последний день — успей получить!</b>{tail}'
 
 
@@ -722,8 +726,8 @@ def night_hold(kind, r, now):
     """Придержать ли пост в тихие часы (несрочное). Срочное — всегда сразу."""
     if kind == "ending":
         return True
-    if kind in ("dates_confirmed", "cond_confirmed"):
-        return True          # уточнение не срочное — подождёт до утра
+    if kind in ("dates_confirmed", "cond_confirmed", "finished"):
+        return True          # уточнение и «раздача закрылась» подождут до утра
     if kind == "appeared_upcoming":
         s = (r.get("window") or {}).get("start")
         return bool(s) and (s - now).total_seconds() > ENDING_WINDOW  # до старта >суток
@@ -805,6 +809,29 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
             elif active and not st.get("ending") and short:
                 ending.append((key, r))
 
+    # ЗАВЕРШЕНИЕ РАЗДАЧИ. Обычный цикл выше идёт по live — а закрывшийся значок
+    # туда не попадает (is_shown уже False), поэтому конец кампании оставался
+    # незамеченным: последним словом в канале было «последний день», и читатель
+    # не знал, всё ли ещё можно успеть. Идём по state — там ровно то, о чём мы
+    # уже рассказывали.
+    by_id = {r["set_id"]: r for r in records}
+    for key, st in state.items():
+        if st.get("finished") or not st.get("end"):
+            continue
+        try:
+            end = datetime.strptime(st["end"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        # Только СВЕЖЕ закрывшиеся. Без окна первый же запуск после появления
+        # этой логики вывалил бы в канал десяток «раздача завершилась» про
+        # кампании недельной давности. GC чистит state через 7 дней, так что
+        # двух суток хватает с запасом.
+        if not (timedelta(0) < now - end <= timedelta(days=2)):
+            continue
+        r = by_id.get(key)
+        if r:
+            announce.append((key, r, "finished"))
+
     night = in_quiet_hours(now)
 
     # ПОЯВЛЕНИЯ/СТАРТЫ: по ОДНОЙ ГРУППЕ за тик — так они расходятся во времени
@@ -877,6 +904,8 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
                 state[key]["dates_confirmed"] = True
             elif kind == "cond_confirmed":
                 state[key]["cond_known"] = True
+            elif kind == "finished":
+                state[key]["finished"] = True
                 state[key]["dates_vague"] = False
                 state[key]["end"] = iso(effective_end(r.get("window") or {}))
             elif kind == "active_short":
