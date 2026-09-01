@@ -19,7 +19,7 @@ import json
 import re
 import sys
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -811,6 +811,9 @@ def effective_end(w):
 
 
 NO_DATE_ANNOUNCE_DAYS = 14   # свежий бейдж без дат ещё считаем новостью
+# Сколько ждём, прежде чем анонсировать значок БЕЗ дат: SD обычно дозаполняет их
+# в первые часы, и поспешный анонс оборачивается вторым постом «стартовало».
+NO_DATE_GRACE_HOURS = 3
 
 
 def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_links=None):
@@ -922,12 +925,20 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_l
             added_dt = datetime.fromisoformat(seen.replace("Z", "+00:00")) if seen else None
         except ValueError:
             added_dt = None
-        if added_dt and (now - added_dt).days <= NO_DATE_ANNOUNCE_DAYS:
+        # ...и не раньше, чем через NO_DATE_GRACE_HOURS после появления значка.
+        # Обычно SD проставляет даты в первые часы: у WARDOG и WARLORD они
+        # появились через 12 минут, и канал получил по ДВА поста на значок —
+        # сначала «скоро, даты неизвестны», следом «стартовало». Значку без дат
+        # спешить некуда: сказать, когда он начнётся, мы всё равно не можем.
+        fresh = added_dt and (now - added_dt) < timedelta(hours=NO_DATE_GRACE_HOURS)
+        if added_dt and not fresh and (now - added_dt).days <= NO_DATE_ANNOUNCE_DAYS:
             import fetch_badges
             cat = fetch_badges.category_from_description(hx.get("description"))
             login = fetch_badges.channel_from_description(hx.get("description"))
             window = {
-                "event_title": "", "group": None, "game": cat or "",
+                # Группа по категории: WARDOG и WARLORD — одна кампания, и без
+                # группы они уходили двумя отдельными постами вместо альбома.
+                "event_title": cat or "", "group": cat or None, "game": cat or "",
                 "start": None, "end": None,
                 "cost": None, "condition": hx_cond,
                 "id": None, "all_ids": [],
@@ -938,7 +949,7 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_l
                 "channel_count": 0, "offline_event": False, "dates_coarse": True,
                 "dates_unknown": True,
             }
-            return {"status": "upcoming", "window": window, "group": None,
+            return {"status": "upcoming", "window": window, "group": window["group"],
                     "note_kind": None}
 
     return {"status": "ended", "window": None, "group": None, "note_kind": "unknown"}
