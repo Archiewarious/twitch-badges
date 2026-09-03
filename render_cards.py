@@ -192,9 +192,25 @@ def draw_title_text(d, title, chip_x, chip_y, chip_s, chip_color):
         y += line_h
 
 
+# Сколько дней держим карточку значка ПОСЛЕ конца окна. Пост «раздача
+# завершилась» уходит в течение двух суток после закрытия (см. bot.publish_new),
+# а карточка к тому моменту уже удалялась как неактуальная — пост становился
+# невозможен, и бот бесконечно пытался его отправить.
+KEEP_ENDED_DAYS = 4
+
+
 def is_shown(r):
-    """Бот показывает только актуальные не-технические бейджи."""
-    return r["status"] in ("active", "upcoming") and r.get("group") != "__permanent__"
+    """Бот показывает только актуальные не-технические бейджи, плюс недавно
+    завершившиеся — им ещё предстоит пост о завершении."""
+    if r.get("group") == "__permanent__":
+        return False
+    if r["status"] in ("active", "upcoming"):
+        return True
+    end = (r.get("window") or {}).get("end")
+    if end:
+        from datetime import datetime, timezone, timedelta
+        return datetime.now(timezone.utc) - end <= timedelta(days=KEEP_ENDED_DAYS)
+    return False
 
 
 def sync_cards(records):

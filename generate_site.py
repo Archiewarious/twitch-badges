@@ -1763,11 +1763,15 @@ def sync_images(records):
     import fetch_streamdb as collector
 
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    import render_cards
+
     wanted = {}  # uuid -> cdn_url
     for r in records:
-        # Только актуальные не-технические — совпадает с тем, что показывает бот
-        # (сайт архивные/постоянные картинки грузит напрямую с Twitch CDN).
-        if r["status"] in ("active", "upcoming") and r.get("group") != "__permanent__":
+        # Актуальные не-технические плюс недавно завершившиеся: последним ещё
+        # предстоит пост «раздача завершилась», а без картинки он невозможен.
+        # Критерий держим общий с render_cards, чтобы картинка и карточка не
+        # исчезали вразнобой.
+        if render_cards.is_shown(r):
             key = collector.image_cache_key(r["image"])
             if key:
                 wanted[key] = r["image"]
