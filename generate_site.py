@@ -1288,6 +1288,8 @@ def add_orphan_event_records(records, snapshot, now):
     значит, когда настоящий бейдж появится, он схлопнется с этой записью и второго
     поста не будет. Если SD назовёт его иначе, повтор всё же возможен: страхуемся
     тем, что синтетическую запись выключает любой бейдж с таким же заголовком."""
+    import fetch_badges
+
     badges = snapshot.get("badges") or []
     known_ids = {(b.get("current") or {}).get("set_id") for b in badges}
     known_titles = {
@@ -1340,7 +1342,21 @@ def add_orphan_event_records(records, snapshot, now):
             status = "upcoming"
         else:
             continue          # уже прошло — воскрешать нечего
-        art, art_from = _previous_year_art(slug, badges)
+        # Сначала — арт от самого Twitch: он заводит значок раньше, чем SD
+        # внесёт его в каталог. Ищем по слагу кампании и по имени значка из
+        # текста события; берём только точное совпадение, чужая картинка хуже
+        # отсутствующей.
+        art = art_from = None
+        hx_name = fetch_badges.badge_name_from_description(content)
+        for hsid, hinfo in (_HELIX or {}).items():
+            if not hinfo.get("image_url_4x"):
+                continue
+            htitle = _norm_alnum(hinfo.get("title"))
+            if hsid == slug or (hx_name and htitle == _norm_alnum(hx_name)):
+                art, art_from = hinfo["image_url_4x"], None
+                break
+        if not art:
+            art, art_from = _previous_year_art(slug, badges)
         # Прошлогоднего арта может не быть вовсе — серия новая или не годовая
         # (LEGO Harley Quinn/Joker). Раньше такие кампании просто выбрасывались,
         # и анонс не выходил, хотя у SD были и точные даты, и условие. Теперь
@@ -1349,7 +1365,7 @@ def add_orphan_event_records(records, snapshot, now):
         # Bloody Finger», а не «Questline 2: Path of the Cardinal Sin».
         # set_id при этом остаётся слагом события — два разных квестлайна у SD
         # называют один и тот же значок, и общий слаг склеил бы их в одну запись.
-        badge_name = fetch_badges.badge_name_from_description(content)
+        badge_name = hx_name
         out.append({
             "set_id": slug,
             "title": badge_name or title,

@@ -169,8 +169,12 @@ def try_collect_info() -> dict:
             "title": (v.get("title") or "").strip(),
             "description": (v.get("description") or "").strip(),
             "click_url": (v.get("click_url") or "").strip(),
+            # Картинка. Twitch заводит значок раньше, чем StreamDatabase внесёт
+            # его в каталог, — тогда арт есть только здесь, и без него пост в
+            # канал не уходит вовсе (см. bot.has_badge_art).
+            "image_url_4x": (v.get("image_url_4x") or "").strip(),
         }
-        if info["description"] or info["click_url"]:
+        if info["description"] or info["click_url"] or info["image_url_4x"]:
             out[badge_set["set_id"]] = info
     return out
 
