@@ -597,27 +597,11 @@ def make_entry(r):
 
 
 ORPHAN_MATCH_DAYS = 2
-# Минимальный промежуток между постами-анонсами. Тик публикации быстрый (2 мин),
-# чтобы новость не залёживалась, но выдавать посты с той же частотой нельзя —
-# читатель видит очередь одинаковых сообщений.
-MIN_ANNOUNCE_GAP = 600
-LAST_ANNOUNCE_FILE = PROJECT_ROOT / "data" / "last_announce.json"
-
-
-def announce_too_soon(now):
-    try:
-        prev = json.loads(LAST_ANNOUNCE_FILE.read_text())["at"]
-        last = datetime.strptime(prev, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    except (OSError, ValueError, KeyError):
-        return False
-    return (now - last).total_seconds() < MIN_ANNOUNCE_GAP
-
-
-def mark_announced(now):
-    try:
-        LAST_ANNOUNCE_FILE.write_text(json.dumps({"at": iso(now)}))
-    except OSError:
-        pass
+# Пауза между анонсами НЕ вводится намеренно: владелец предпочитает быструю
+# реакцию, а «спам» в канале был не от частоты, а от дублей — их убирают
+# NO_DATE_GRACE_HOURS (анонс без дат ждёт, пока SD их проставит) и
+# supersedes_orphan (значок не анонсируется повторно вслед за кампанией).
+# Разнесение во времени даёт сам тик: одна группа за проход.
 
 
 def supersedes_orphan(r, state):
@@ -969,15 +953,6 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
     # владелец хочет новости немедленно).
     ready = [item for item in announce if not (night and night_hold(item[2], item[1], now))]
 
-    # ...и не чаще одного поста в MIN_ANNOUNCE_GAP. Раньше промежуток задавался
-    # самим тиком, и когда тик ускорили с 10 минут до 2 ради быстрой реакции,
-    # несвязанные посты стали приходить очередями: 07:03, 07:05, 07:19 —
-    # в канале это читается как спам. Обнаружение осталось быстрым, разошлась
-    # только выдача: первый пост уходит сразу, следующий ждёт паузу.
-    if ready and announce_too_soon(now):
-        log.info("придерживаю %d анонс(ов): с прошлого поста прошло меньше %d мин",
-                 len(ready), MIN_ANNOUNCE_GAP // 60)
-        ready = []
 
     # Бейджи одного события (напр. 6 тиров EWC Co-Streamer) — ОДИН пост-альбом,
     # а не 6 постов подряд. Разные события — разные посты, по одному за тик.
@@ -1067,7 +1042,6 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
             else:
                 state[key] = make_entry(r)
         save_state(state)
-        mark_announced(now)
         posted_anything = True
         break   # один пост за тик
 
