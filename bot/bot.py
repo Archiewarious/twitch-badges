@@ -1157,25 +1157,51 @@ async def check_anomalies(context: ContextTypes.DEFAULT_TYPE):
         records = [r for r in get_records() if is_shown(r)]
     except Exception:
         return
-    issues = []
+    # Тревога тут — про ИСТОЧНИК, а не про нашу поломку: владелец не может
+    # заставить StreamDatabase дописать условие. Поэтому будим, только когда
+    # молчание реально вредит и длится долго:
+    #   · значок УЖЕ выдаётся (active) — про upcoming рано волноваться, обычно
+    #     данные подъезжают до старта;
+    #   · и он без условия дольше INCOMPLETE_ALERT_HOURS.
+    # Раньше алерт уходил сразу и повторялся каждые 6 часов — про Clipped That
+    # он пришёл дважды, хотя условие лежало в тексте события и починка была наша.
+    st = load_monitor_state()
+    seen = st.setdefault("incomplete_since", {})
+    now = datetime.now(timezone.utc)
+    issues, live_ids = [], set()
     for r in records:
         w = r.get("window") or {}
         _, _, url = watch_target(r)
-        # Будим владельца только если пост получается БЕСПОЛЕЗНЫМ: ни условия, ни
-        # ссылки — читателю некуда идти. Если условия нет, но ссылка есть, пост
-        # честно говорит «условия уточняются · подробности — <ссылка>», и это
-        # штатная ситуация: у SD для части бейджей условия нет в принципе.
-        # Иначе один активный ивент (EWC до 23 августа) слал бы алерт каждые 6ч
-        # весь месяц и обесценил алертинг целиком.
-        if not r.get("condition") and not url:
-            issues.append(f"❓ {r['title']}: ни условия, ни ссылки — пост будет пустым")
-        elif w.get("channel_count") and not url:
-            issues.append(f"🔗 {r['title']}: не нашёл ссылку на событие/категорию")
+        incomplete = (not r.get("condition") and not url) or (
+            w.get("channel_count") and not url)
+        if not incomplete:
+            continue
+        live_ids.add(r["set_id"])
+        first = seen.setdefault(r["set_id"], iso(now))
+        if r["status"] != "active":
+            continue
+        try:
+            since = datetime.strptime(first, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            since = now
+        if (now - since).total_seconds() < INCOMPLETE_ALERT_HOURS * 3600:
+            continue
+        hours = int((now - since).total_seconds() // 3600)
+        issues.append(f"❓ {r['title']}: выдаётся уже {hours} ч, а сказать «как получить» "
+                      "нечего — ни условия, ни ссылки")
+    # Забываем те, что починились сами: иначе счётчик «сколько висит» врёт.
+    for sid in list(seen):
+        if sid not in live_ids:
+            del seen[sid]
+    save_monitor_state(st)
+
     if issues:
         body = "\n".join(issues[:15])
         if len(issues) > 15:
             body += f"\n…и ещё {len(issues) - 15}"
-        await send_alert("anomalies", f"{len(issues)} бейдж(ей) требуют внимания", body)
+        body += ("\n\nЭто пробел ИСТОЧНИКА, а не поломка бота: канал работает, "
+                 "просто про этот значок сказать нечего.")
+        await send_alert("anomalies", f"{len(issues)} бейдж(ей) без условия", body)
     else:
         await clear_alert("anomalies", "все бейджи распознаны")
 
@@ -1186,7 +1212,11 @@ BLINDSPOT_DAYS = 30      # «недавно добавлен» — окно, в 
 # данных нет ни у нас, ни у SD, и алертить не о чем: следующий refresh (раз в
 # 30 мин) подхватит сам. Так было с Dead by Daylight Pride Icon 27.07: значок
 # заведён в 20:14, снапшот снят в 20:16, а к 20:43 у SD уже всё было.
-BLINDSPOT_GRACE_HOURS = 3
+BLINDSPOT_GRACE_HOURS = 24
+# Сколько значок должен ВЫДАВАТЬСЯ без условия, прежде чем это станет поводом
+# разбудить владельца. Меньше — и мы будим из-за задержек StreamDatabase, на
+# которые владелец повлиять не может.
+INCOMPLETE_ALERT_HOURS = 24
 IGNORE_FILE = PROJECT_ROOT / "monitor" / "ignore.txt"
 
 

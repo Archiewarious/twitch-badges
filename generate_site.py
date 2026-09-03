@@ -529,6 +529,15 @@ def _condition_from_content(raw):
         parts.append("смотреть трансляцию")
     if re.search(r"bits|cheer", raw):
         parts.append("потратить Bits")
+    # Клип-задания: «Unlock the badge by downloading and sharing an epic mid-set
+    # moment from your stream to social» (Clipped That, 01.09.2026). Действие
+    # однозначное, но прежние слова его не покрывали — условие выходило пустым,
+    # и раз в 6 часов уходила тревога о значке, с которым всё в порядке.
+    if re.search(r"\bclip\b|\bclips\b|moment from your stream", raw):
+        if re.search(r"shar|post|social", raw):
+            parts.append("создать клип и поделиться им")
+        else:
+            parts.append("создать клип")
     text = " или ".join(parts)
     return text[0].upper() + text[1:] if text else None
 
