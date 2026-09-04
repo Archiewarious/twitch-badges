@@ -67,7 +67,9 @@ import generate_site as site  # noqa: E402
 load_dotenv(PROJECT_ROOT / ".env")
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip() or None
-SITE_URL = "https://example.invalid"
+# Публичный адрес, с которого Telegram забирает картинки и карточки. Задаётся
+# в .env: домен привязан к конкретной установке, в репозитории ему не место.
+SITE_URL = os.environ.get("SITE_URL", "").rstrip("/") or "http://localhost"
 BOT_USERNAME = "InfoTwitchBot"
 CHANNEL_URL = "https://t.me/TwitchInfoRadar"
 CHANNEL_HANDLE = "@TwitchInfoRadar"

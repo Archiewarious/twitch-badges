@@ -573,7 +573,7 @@ def main() -> int:
 
     # GUARD против тихого обнуления: если StreamDatabase сменит вёрстку, find_badge_list
     # вернёт [] → снапшот с badges:[] → refresh.sh rsync --delete вычистит /var/www
-    #. Лучше упасть с ненулевым кодом: под set -e refresh абортит
+    # (и картинки сайта). Лучше упасть с ненулевым кодом: под set -e refresh абортит
     # ДО commit-marker → старые latest.json и картинки сохраняются, плюс сработает алерт.
     if "pageProps" not in catalog_raw:
         raise RuntimeError("нет pageProps в ответе каталога — StreamDatabase сменил формат")
