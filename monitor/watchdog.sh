@@ -84,9 +84,8 @@ if [ "${PCT:-0}" -ge "${DISK_MAX:-90}" ]; then
             docker image prune -f          # только висячие слои
             sudo journalctl --vacuum-size=200M ; sudo apt-get clean
 
-НЕ запускать 'docker system prune -a': снесёт локально собранные образы
-— их нет ни в одном
-реестре, восстановить можно только пересборкой."
+НЕ запускать 'docker system prune -a': снесёт локально собранные образы —
+их нет ни в одном реестре, восстановить можно только пересборкой."
 else
   "$ALERT" --clear disk-full "диск ${PCT}%"
 fi
