@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
 """
-Собирает список глобальных Twitch-бейджей через Helix API,
-сохраняет снапшот и показывает, что появилось/исчезло/изменилось
-по сравнению с предыдущим запуском.
+Twitch Helix — ВТОРОЙ источник данных о значках, рядом со StreamDatabase.
 
-Всё, что нужно, лежит в этой же папке: .env с credentials,
-data/ со снапшотами и changelog.md.
+Зачем он нужен. SD ведут люди, и у свежих кампаний там нередко пусто: страница
+значка честно пишет «We don't yet know if this badge is earned by subscribing or
+watching». Twitch к этому моменту уже отдаёт и описание, и картинку. Отсюда мы
+берём:
+  · description — из него разбираются условие, категория и канал;
+  · image_url_4x — арт значка, когда SD ещё не внёс его в каталог;
+  · click_url — ссылка (есть лишь у служебных значков вроде Bits).
+
+Основной вход — try_collect_info(): никогда не бросает, без ключей возвращает
+пустой словарь, и тогда проект работает на одном StreamDatabase.
+
+Файл можно запустить и напрямую — тогда он сравнит текущий список значков с
+прошлым снапшотом и допишет изменения в changelog.md. Это вспомогательный режим
+для ручного наблюдения, в основном цикле он не используется.
 """
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,8 +89,6 @@ def normalize(raw: dict) -> dict:
             }
     return out
 
-
-import re  # noqa: E402
 
 # «...to a streamer in the ELDEN RING category» — Twitch пишет это шаблонно, и
 # для 56 значков из 357 это ЕДИНСТВЕННОЕ указание, где значок получать: у SD для
