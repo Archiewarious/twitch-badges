@@ -296,6 +296,9 @@ def strip_accents(s):
 _CATEGORY_URLS = {}
 # Описания Twitch — нужны и в classify (значок без дат, но с известным условием).
 _HELIX = {}
+# Опубликованная availability со страниц значков — нужна и в classify: условие
+# бывает известно при полном отсутствии дат.
+_PAGE_AVAIL = {}
 
 
 def _cat_key(name):
@@ -928,7 +931,16 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_l
     # Даты не выдумываем: пост честно скажет «даты уточняются».
     hx = (_HELIX or {}).get(set_id) or {}
     hx_cond = condition_from_helix(hx.get("description"))
-    if hx_cond:
+    # Условие могло прийти и из ОПУБЛИКОВАННОЙ availability со страницы значка —
+    # просто без дат. У WSCI 2026 SD знает «подписка или гифт» (steps), а описание
+    # Twitch условия не несёт («earned by supporting the … Invitational»). Фолбэк
+    # смотрел только на Twitch, и значок двое суток молчал как «нет дат — не знаю,
+    # как классифицировать», хотя сказать было что.
+    page_avs = [av for av in ((_PAGE_AVAIL or {}).get(set_id) or []) if not av.get("hidden")]
+    pa_cond = next((c for c in (describe_condition_ru(av) for av in page_avs) if c), None)
+    pa_cost = next((cost_from_steps(av.get("steps"), None) for av in page_avs
+                    if av.get("steps")), None)
+    if hx_cond or pa_cond:
         seen = badge_first_seen(catalog_badge)
         try:
             added_dt = datetime.fromisoformat(seen.replace("Z", "+00:00")) if seen else None
@@ -949,7 +961,7 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_l
                 # группы они уходили двумя отдельными постами вместо альбома.
                 "event_title": cat or "", "group": cat or None, "game": cat or "",
                 "start": None, "end": None,
-                "cost": None, "condition": hx_cond,
+                "cost": pa_cost, "condition": pa_cond or hx_cond,
                 "id": None, "all_ids": [],
                 "category_href": category_url_for(cat),
                 "box_art_url": None,
@@ -1394,6 +1406,8 @@ def build_records(snapshot):
     _CATEGORY_URLS = snapshot.get("category_urls") or {}
     global _HELIX
     _HELIX = snapshot.get("helix") or {}
+    global _PAGE_AVAIL
+    _PAGE_AVAIL = snapshot.get("page_availability") or {}
     windows_by_id = collect_windows_by_set_id(
         snapshot.get("events", []), snapshot.get("twitch_links"))
     # Приоритет источников окна (более точный НЕ перезаписывается):
