@@ -278,5 +278,25 @@ def main() -> int:
     return 0
 
 
+def clear_failure_alert():
+    """Успешный прогон снимает OnFailure-тревогу о падении самого опроса.
+
+    refresh.sh делает так с первого дня, а опрос — нет: тревога от одиночного
+    таймаута 09.09.2026 так и висела активной, и любой следующий сбой пришёл бы
+    уже как «STILL FAILING», хотя между ними опрос тысячи раз отработал штатно."""
+    alert = ROOT / "monitor" / "alert.sh"
+    if not alert.exists():
+        return
+    try:
+        subprocess.run([str(alert), "--clear", "failed-twitch-badges-poll.service",
+                        "опрос снова работает"], timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    rc = main()
+    if rc == 0:
+        clear_failure_alert()
+    raise SystemExit(rc)
