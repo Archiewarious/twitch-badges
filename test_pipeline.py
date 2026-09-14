@@ -78,6 +78,7 @@ def test_format_drift(base):
     def drop_steps(s):
         for av in each_availability(s):
             av.pop("steps", None)
+            av.pop("objectives", None)
 
     def break_categories(s):
         for av in each_availability(s):
@@ -89,8 +90,9 @@ def test_format_drift(base):
 
     def unknown_step(s):
         for av in each_availability(s):
-            if av.get("steps"):
-                av["steps"] = [[{"type": "quest_complete", "quest_id": 7}]]
+            if av.get("objectives") or av.get("steps"):
+                av["objectives"] = [[{"type": "quest_complete", "quest_id": 7}]]
+                av.pop("steps", None)
                 return
 
     def break_image_urls(s):
@@ -101,7 +103,7 @@ def test_format_drift(base):
 
     cases = [
         ("каталог завернули в twitchGlobalBadge", wrap_catalog),
-        ("условия (steps) исчезли", drop_steps),
+        ("условия (objectives/steps) исчезли", drop_steps),
         ("категории сменили форму", break_categories),
         ("пропало поле hidden", drop_hidden),
         ("появился незнакомый тип шага", unknown_step),

@@ -150,7 +150,8 @@ def _step_ru(step):
                 f"{plural(days, 'день', 'дня', 'дней')})" if days
                 else "купить билет на офлайн-мероприятие TwitchCon")
     if t == "bits":
-        return "потратить Bits"
+        amount = step.get("bits_amount")
+        return f"потратить {amount} Bits" if amount and amount > 1 else "потратить Bits"
     if t == "clip":
         return "создать клип"
     if t == "turbo":
@@ -206,19 +207,26 @@ def describe_steps_ru(steps):
     return text[0].upper() + text[1:]
 
 
+def av_objectives(av):
+    """Структурное условие записи availability.
+
+    SD переименовал поле: до сентября 2026 — steps, с 13.09 — objectives (форма
+    та же: этапы × альтернативы). Проверка формата поймала пропажу steps сразу,
+    но разбор уже тихо обеднел: у Pichu пропало «в 3 разных дня», у costumed
+    Pikachu условие собиралось из плоских полей. Читаем оба имени."""
+    av = av or {}
+    return av.get("objectives") or av.get("steps")
+
+
 def describe_condition_ru(av):
     """Строит русское описание условия из структурных полей StreamDatabase,
     а не переводом английского objective — так честнее для 'unknown'-полей.
 
     steps приоритетнее: там есть и порядок этапов, и «в N разных дней»."""
-    from_steps = describe_steps_ru(av.get("steps"))
+    from_steps = describe_steps_ru(av_objectives(av))
     if from_steps:
         return from_steps
     parts = []
-    if av.get("watch"):
-        mins = av.get("watch_minutes")
-        parts.append(f"смотреть эфир {ru_duration_minutes(mins)}" if mins else "смотреть эфир")
-
     sub_parts = []
     if av.get("subscription"):
         sub_parts.append(f"оформить {_subs_ru(av.get('subscription_amount'))} "
@@ -229,6 +237,16 @@ def describe_condition_ru(av):
     if sub_parts:
         parts.append(" или ".join(sub_parts))
 
+    if av.get("watch"):
+        mins = av.get("watch_minutes")
+        text = f"смотреть эфир {ru_duration_minutes(mins)}" if mins else "смотреть эфир"
+        # watch_days появился плоским полем 13.09.2026 (у записей без objectives):
+        # без него у Pichu и стартеров терялось «в 3 разных дня».
+        days = av.get("watch_days")
+        if days and days > 1:
+            text += f" в {days} {plural(days, 'разный день', 'разных дня', 'разных дней')}"
+        parts.append(text)
+
     if av.get("twitchcon"):
         days = av.get("twitchcon_days")
         # Явно "офлайн-мероприятие" — иначе можно принять за обычный Twitch-дроп
@@ -237,7 +255,10 @@ def describe_condition_ru(av):
                       f"{plural(days, 'день', 'дня', 'дней')})" if days
                       else "купить билет на офлайн-мероприятие TwitchCon")
     if av.get("bits"):
-        parts.append("потратить Bits")
+        amount = av.get("bits_amount")
+        # SD ставит bits_amount=1 в смысле «сколько угодно» (SUBtember) —
+        # «потратить 1 Bits» звучит нелепо, число показываем от двух.
+        parts.append(f"потратить {amount} Bits" if amount and amount > 1 else "потратить Bits")
     if av.get("clip") and not av.get("watch"):
         parts.append("создать клип")
     if av.get("turbo") and not sub_parts:
@@ -245,7 +266,16 @@ def describe_condition_ru(av):
 
     if not parts:
         return None
-    text = "; ".join(parts)
+    # Как действия сочетаются, SD теперь говорит полем operator. Раньше части
+    # склеивались через «;», и «смотреть эфир 20 минут; оформить подписку» у
+    # Bulbasaur читалось как два шага подряд — а по данным это АЛЬТЕРНАТИВЫ.
+    joiner = " и " if av.get("operator") == "and" else " или "
+    text = joiner.join(parts)
+    # chance_denominator — значок выпадает не всегда: у стартеров покемонов
+    # «шанс 1 из 3» (случайный из трёх). Без пометки читатель ждал бы гарантию.
+    chance = av.get("chance_denominator")
+    if chance and chance > 1:
+        text += f" (шанс 1 из {chance})"
     return text[0].upper() + text[1:]
 
 
@@ -424,7 +454,7 @@ def collect_windows_by_set_id(events, twitch_links=None):
                     "game": game,
                     "start": start,
                     "end": end,
-                    "cost": cost_from_steps(av.get("steps"), ", ".join(av.get("costs") or [])),
+                    "cost": cost_from_steps(av_objectives(av), ", ".join(av.get("costs") or [])),
                     "condition": describe_condition_ru(av),
                     # Билет на офлайн-мероприятие (TwitchCon и т.п.) — не "Twitch Drop"
                     # в смысле бота/канала: нельзя получить действием на Twitch, нужно
@@ -706,7 +736,7 @@ def add_catalog_windows(windows, badges, page_info=None, twitch_links=None):
             windows[set_id] = [{
                 "event_title": "", "group": None,
                 "start": start, "end": end,
-                "cost": cost_from_steps(av.get("steps"), ", ".join(av.get("costs") or [])),
+                "cost": cost_from_steps(av_objectives(av), ", ".join(av.get("costs") or [])),
                 "condition": describe_condition_ru(av),
                 "id": av.get("_id"), "all_ids": [],
                 "category_href": category_href(av.get("categories")),
@@ -744,7 +774,7 @@ def add_page_availability_windows(windows, page_avail, twitch_links=None):
                 "event_title": "", "group": None,
                 "game": _category_name(cats),
                 "start": start, "end": end,
-                "cost": cost_from_steps(av.get("steps"), ", ".join(av.get("costs") or [])),
+                "cost": cost_from_steps(av_objectives(av), ", ".join(av.get("costs") or [])),
                 "condition": describe_condition_ru(av),
                 "id": av.get("_id"), "all_ids": [],
                 "category_href": category_href(cats),
@@ -938,8 +968,8 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_l
     # как классифицировать», хотя сказать было что.
     page_avs = [av for av in ((_PAGE_AVAIL or {}).get(set_id) or []) if not av.get("hidden")]
     pa_cond = next((c for c in (describe_condition_ru(av) for av in page_avs) if c), None)
-    pa_cost = next((cost_from_steps(av.get("steps"), None) for av in page_avs
-                    if av.get("steps")), None)
+    pa_cost = next((cost_from_steps(av_objectives(av), None) for av in page_avs
+                    if av_objectives(av)), None)
     if hx_cond or pa_cond:
         seen = badge_first_seen(catalog_badge)
         try:

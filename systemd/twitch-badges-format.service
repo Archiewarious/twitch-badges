@@ -14,5 +14,8 @@ WorkingDirectory=/home/archie/projects/twitch-badges
 ExecStart=/home/archie/projects/twitch-badges/venv/bin/python /home/archie/projects/twitch-badges/check_format.py --snapshot
 # Плюс сквозные тесты: ловим ли смену формата и подхватим ли новую кампанию.
 ExecStart=/home/archie/projects/twitch-badges/bot/venv/bin/python /home/archie/projects/twitch-badges/test_pipeline.py
+# Прошли обе проверки — снимаем свою OnFailure-тревогу. Без этого она висела
+# активной и после починки, и следующий сбой пришёл бы как «STILL FAILING».
+ExecStartPost=/home/archie/projects/twitch-badges/monitor/alert.sh --clear failed-twitch-badges-format.service "проверки формата снова проходят"
 TimeoutStartSec=120
 MemoryMax=256M

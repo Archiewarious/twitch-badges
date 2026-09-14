@@ -92,8 +92,10 @@ def check_availability(problems, events, page_avail):
     problems.check(any("hidden" in av for av in avs),
                    "availability: пропало поле hidden — не отличим черновик "
                    "модератора от опубликованных данных")
-    problems.check(any(av.get("steps") for av in avs),
-                   "availability: нигде нет steps — условия снова обеднеют до "
+    # Поле переименовывали: steps → objectives (13.09.2026). Проверка поймала это
+    # сразу; принимаем любое из имён, но хотя бы одно обязано быть.
+    problems.check(any(av.get("objectives") or av.get("steps") for av in avs),
+                   "availability: нигде нет objectives/steps — условия снова обеднеют до "
                    "плоских полей (потеряется «в N разных дней» и порядок этапов)")
     # Категории меняли формат: было {"game": {...}}, стало плоское {"name": ...}
     cats = [c for av in avs for c in (av.get("categories") or [])]
@@ -109,11 +111,12 @@ def check_availability(problems, events, page_avail):
 
 def check_steps(problems, events, page_avail):
     """Все ли типы шагов нам знакомы. Незнакомый обнуляет разбор условия целиком."""
-    steps = [av.get("steps")
+    steps = [av.get("objectives") or av.get("steps")
              for ev in events
              for b in ev.get("twitch_global_badges") or []
              for av in b.get("availability") or []]
-    steps += [av.get("steps") for lst in (page_avail or {}).values() for av in lst]
+    steps += [av.get("objectives") or av.get("steps")
+              for lst in (page_avail or {}).values() for av in lst]
     unknown = set()
     for st in steps:
         for stage in st or []:
