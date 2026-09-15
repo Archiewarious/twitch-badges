@@ -725,6 +725,12 @@ def channel_buttons(r):
 
 
 async def post_badge(context, r, kind, now=None):
+    # Единая точка запрета «без настоящего арта в канал не идём». Раньше проверка
+    # стояла только на анонсах, и пост «раздача завершилась» про Clipped That
+    # ушёл с карточкой-заглушкой: этот путь шёл мимо неё.
+    if not has_badge_art(r):
+        log.warning("post_badge: у %s нет настоящего арта — в канал не отправляю", r["set_id"])
+        return False
     url = card_url(r)
     if not url:
         log.warning("post_badge: нет картинки для %s, пропуск", r["set_id"])
@@ -808,7 +814,7 @@ async def post_album(context, items, kind, group=None):
     """N бейджей одним постом-альбомом (все картинки + инструкции), а не N постов.
     Альбомы Telegram не поддерживают inline-кнопки → ссылки идут текстом.
     items: список (key, r). Возвращает set успешно опубликованных key."""
-    items = [(k, r) for k, r in items if card_url(r)]
+    items = [(k, r) for k, r in items if has_badge_art(r) and card_url(r)]
     posted, i = set(), 0
     while i < len(items):
         # жадно набираем чанк: и медиа (≤10), и подпись (≤1024) должны влезть
@@ -972,7 +978,11 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
             continue
         r = by_id.get(key)
         if r:
-            announce.append((key, r, "finished"))
+            if has_badge_art(r):
+                announce.append((key, r, "finished"))
+            else:
+                # Без арта пост о завершении не шлём и больше не пытаемся.
+                st["finished"] = True
 
     night = in_quiet_hours(now)
 
@@ -1033,7 +1043,7 @@ async def publish_new(context: ContextTypes.DEFAULT_TYPE):
                 # невозможен, и повторять его каждые две минуты бессмысленно:
                 # бот бесконечно долбился в mootivation и поднимал ложную
                 # тревогу «не могу опубликовать в канал».
-                if not done and not card_url(r):
+                if not done and not has_badge_art(r):
                     log.warning("%s (%s): картинки нет и не будет — отмечаю как "
                                 "обработанный, чтобы не зациклиться", key, kind)
                     done = {key}
