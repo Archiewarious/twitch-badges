@@ -129,6 +129,30 @@ def load_previous():
     return signature(snap.get("badges") or [], snap.get("events") or [])
 
 
+PARSE_FAIL_LIMIT = 3
+PARSE_FAIL_FILE = ROOT / "data" / "poll_parse_fails.json"
+
+
+def _bump_parse_fails():
+    try:
+        n = int(json.loads(PARSE_FAIL_FILE.read_text())["n"])
+    except (OSError, ValueError, KeyError, TypeError):
+        n = 0
+    n += 1
+    try:
+        PARSE_FAIL_FILE.write_text(json.dumps({"n": n}))
+    except OSError:
+        pass
+    return n
+
+
+def _reset_parse_fails():
+    try:
+        PARSE_FAIL_FILE.unlink()
+    except OSError:
+        pass
+
+
 MAX_PAGE_PROBES = 6
 
 
@@ -234,14 +258,23 @@ def main() -> int:
     # а не «значки кончились». Молча принять его за изменение и дёрнуть refresh
     # значило бы устроить шторм пустых прогонов.
     if not badges or not events:
-        # НЕ тихий пропуск: сеть моргнула — это исключение выше, а сюда мы попадаем,
-        # когда SD ответил успешно, но разобрать ответ не вышло. Это всегда смена
-        # формата, то есть поломка, требующая правки кода. 27.08.2026 SD завернул
-        # значки в {"twitchGlobalBadge": {...}}, и опрос 35 минут молча возвращал 0 —
-        # владелец узнал о заморозке данных только когда упал получасовой refresh.
-        print("пустой каталог/события: SD ответил, но разобрать не вышло — "
-              "похоже, сменился формат (см. find_badge_list)", file=sys.stderr)
+        # SD ответил успешно, но разобрать не вышло. Обычно это смена формата —
+        # поломка, требующая правки кода (27.08.2026 значки завернули в
+        # twitchGlobalBadge, и опрос 35 минут молча возвращал 0). Но ровно так же
+        # выглядит и деплой источника: 19.09.2026 в окне выката пришло несколько
+        # неразбираемых ответов подряд, и каждый разбудил владельца, хотя через
+        # пару минут всё восстановилось само. Поэтому бьём тревогу только если
+        # ответ не разбирается PARSE_FAIL_LIMIT раз подряд: настоящая смена
+        # формата никуда не денется, а деплой пройдёт.
+        fails = _bump_parse_fails()
+        msg = ("пустой каталог/события: SD ответил, но разобрать не вышло "
+               f"({fails}/{PARSE_FAIL_LIMIT} подряд)")
+        if fails < PARSE_FAIL_LIMIT:
+            print(msg + " — считаю деплоем источника, жду", file=sys.stderr)
+            return 0
+        print(msg + " — похоже, сменился формат (см. find_badge_list)", file=sys.stderr)
         return 1
+    _reset_parse_fails()
 
     new = signature(badges, events)
     old = load_previous()

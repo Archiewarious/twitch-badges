@@ -86,10 +86,27 @@ def get_build_id() -> str:
 
 
 def fetch_next_data(build_id: str, path: str) -> dict:
-    url = f"{BASE}/_next/data/{build_id}/{path}.json"
-    resp = SESSION.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+    """Данные страницы Next.js. На 404 — ОДИН повтор со свежим buildId.
+
+    buildId живёт ровно до следующего деплоя SD. Мы берём его в начале прогона,
+    и если SD выкатывается в эти же секунды, все последующие запросы отвечают
+    404: 19.09.2026 сбор так и упал с трейсбеком, разбудив владельца, хотя через
+    двадцать минут всё шло само собой. Ротация buildId — штатное событие
+    источника, а не поломка, поэтому лечим её на месте."""
+    def _get(bid):
+        resp = SESSION.get(f"{BASE}/_next/data/{bid}/{path}.json",
+                           headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+
+    try:
+        return _get(build_id)
+    except requests.HTTPError as e:
+        if e.response is None or e.response.status_code != 404:
+            raise
+    fresh = get_build_id()
+    print(f"buildId устарел ({build_id} → {fresh}) — повторяю запрос", file=sys.stderr)
+    return _get(fresh)
 
 
 def find_badge_list(obj):
