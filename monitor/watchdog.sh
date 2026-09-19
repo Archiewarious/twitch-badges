@@ -1,7 +1,8 @@
 #!/bin/bash
 # Level-based watchdog: раз в ~15 мин проверяет «данные свежие + бот жив + диск ок»
 # и поднимает/снимает тревоги через alert.sh (с дедупом и recovery).
-# Ставится на systemd timer. Дополняет OnFailure=, который ловит мгновенные падения.
+# Ставится на systemd timer. ОСНОВНОЙ источник тревог: у сбора и опроса
+# OnFailure нет намеренно — единичный неудачный прогон не событие для владельца.
 set -uo pipefail
 PROJ="/home/archie/projects/twitch-badges"
 ALERT="$PROJ/monitor/alert.sh"
@@ -16,8 +17,20 @@ if [ -f "$LATEST" ]; then
   mtime=$(stat -c %Y "$LATEST")
   age=$(( now - mtime ))
   if [ "$age" -gt "$STALE_MAX" ]; then
+    # Сразу говорим, чья это беда. Отдельных тревог на каждый упавший прогон
+    # больше нет (сбор и опрос лишены OnFailure): источник лежит регулярно, и
+    # пособытийные «упал/восстановился» шли по кругу, ничего не сообщая. Здесь
+    # сигнал уровневый — данные не обновляются дольше порога, — и к нему сразу
+    # приложен ответ на главный вопрос: ждать или чинить.
+    if curl -4 -s -o /dev/null -m 12 "https://www.streamdatabase.com/"; then
+      WHO="источник отвечает — значит, дело на нашей стороне, смотри журнал сбора"
+    else
+      WHO="ИСТОЧНИК НЕ ОТВЕЧАЕТ (streamdatabase.com) — почти наверняка это он, а не бот; данные догонят сами, когда он поднимется"
+    fi
     "$ALERT" data-stale "данные протухли" \
-      "streamdb_latest.json не обновлялся $(( age/60 )) мин (порог $(( STALE_MAX/60 )) мин). refresh не доносит свежие данные — проверь: journalctl -u twitch-badges-refresh.service -n50"
+      "streamdb_latest.json не обновлялся $(( age/60 )) мин (порог $(( STALE_MAX/60 )) мин).
+$WHO
+Смотреть: journalctl -u twitch-badges-refresh.service -n 50"
   else
     "$ALERT" --clear data-stale "данным $(( age/60 )) мин"
   fi

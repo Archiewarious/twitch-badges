@@ -36,5 +36,3 @@ mv -f data/streamdb_incoming.json data/streamdb_latest.json
 
 echo "refresh done: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# Успешный прогон снимает возможную OnFailure-тревогу о падении refresh (шлёт RECOVERED).
-/home/archie/projects/twitch-badges/monitor/alert.sh --clear failed-twitch-badges-refresh.service "refresh снова успешен" 2>/dev/null || true

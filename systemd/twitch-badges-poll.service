@@ -1,8 +1,11 @@
 [Unit]
+# OnFailure намеренно НЕТ. Один неудачный прогон — не событие для владельца:
+# опрос ходит раз в 2 минуты, и любой таймаут источника будил бы по кругу
+# «упал» / «восстановился». Настоящий сигнал уровневый — «данные не
+# обновляются», его даёт watchdog по возрасту snapshot.
 Description=Poll StreamDatabase for changes, trigger refresh immediately
 After=network-online.target
 Wants=network-online.target
-OnFailure=tg-alert@%n.service
 
 [Service]
 Type=oneshot
