@@ -1500,7 +1500,33 @@ def build_records(snapshot):
         by_set.setdefault(rec["set_id"], []).append(rec)
     records = [aggregate_family(members) for members in by_set.values()]
     records = add_orphan_event_records(records, snapshot, now)
-    return canonicalize_categories(records, snapshot.get("category_names") or {})
+    records = canonicalize_categories(records, snapshot.get("category_names") or {})
+    return inherit_group_category(records)
+
+
+def inherit_group_category(records):
+    """Значок без категории берёт её у соседей по кампании, если у тех она одна.
+
+    d20 из «Dungeons & Dragons: Dungeon Masters» описан как «watching Dungeon
+    Masters on Twitch» — места нет, и пост вёл на сайт D&D, где значок не дают.
+    Его сосед по событию ampersand выдаётся в категории Dungeons & Dragons —
+    туда и ведём."""
+    games = {}
+    for r in records:
+        w = r.get("window") or {}
+        if r.get("group") and w.get("game") and w.get("category_href"):
+            games.setdefault(r["group"], set()).add((w["game"], w["category_href"]))
+    for r in records:
+        w = r.get("window")
+        if not w or w.get("game") or len(w.get("categories") or []) > 1:
+            continue
+        tl = str((w.get("twitch_link") or {}).get("url") or "")
+        if "twitch.tv/" in tl:                   # своя ссылка на Twitch точнее
+            continue
+        cands = games.get(r.get("group")) or set()
+        if len(cands) == 1:
+            w["game"], w["category_href"] = next(iter(cands))
+    return records
 
 
 def canonicalize_categories(records, names):

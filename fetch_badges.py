@@ -94,7 +94,9 @@ def normalize(raw: dict) -> dict:
 # для 56 значков из 357 это ЕДИНСТВЕННОЕ указание, где значок получать: у SD для
 # них нет ни категорий, ни каналов. Без разбора пост выходил «Подписка или гифт»
 # без единого слова о месте (так было у Sorcerer Rogier ELDEN RING).
-CATEGORY_IN_DESC_RE = re.compile(r"\bin the\s+(.+?)\s+category\b", re.I)
+# «in the X category» и «watching the X category» — второе у seegson-synthetics
+# (Alien Isolation): без него пост вёл в Steam вместо категории Twitch.
+CATEGORY_IN_DESC_RE = re.compile(r"\b(?:in|watching)\s+the\s+(.+?)\s+category\b", re.I)
 # Второй шаблон: «gifting a sub to a Diablo streamer during BlizzCon 2026».
 # Без него у Diablo вместо категории Twitch в пост шла ссылка на blizzcon.com —
 # сайт мероприятия, где значок не выдают.

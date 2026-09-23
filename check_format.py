@@ -40,6 +40,7 @@ MIN_BADGES = 300
 MIN_EVENTS = 5
 MIN_SHOWN = 3
 MIN_WITH_CONDITION = 0.7      # доля показываемых, у которых есть условие
+MAX_NO_LINK = 0.1             # доля показываемых с категорией, но без ссылки на неё
 
 
 class Problems(list):
@@ -148,6 +149,31 @@ def check_records(problems, snapshot):
                    f"({share:.0%}, ожидали ≥{MIN_WITH_CONDITION:.0%}) — разбор условий сломался")
     problems.check(all(r.get("window") for r in shown),
                    "у части показываемых значков нет окна — классификация поехала")
+    # Ссылки. В сентябре 2026 Twitch убрал og:title, прежняя проверка ссылок
+    # молча отвергала всё, и посты неделю выходили без ссылок — узнали по
+    # скриншоту конкурента. Теперь это видно здесь, в течение часа.
+    with_game = [r for r in shown if (r.get("window") or {}).get("game")]
+    no_link = [r["set_id"] for r in with_game
+               if not str((r.get("window") or {}).get("category_href") or "")
+               .startswith("https://www.twitch.tv/")]
+    if with_game:
+        problems.check(len(no_link) / len(with_game) <= MAX_NO_LINK,
+                       f"категория без ссылки у {len(no_link)} из {len(with_game)} значков "
+                       f"({', '.join(no_link[:5])}) — резолв категорий сломался "
+                       "(fetch_streamdb.resolve_category_urls)")
+
+
+def check_category_resolver(problems):
+    """Живая проверка GQL Twitch, через который берём ссылки на категории.
+    Сеть недоступна — не поломка; «Just Chatting не найдена» — поломка."""
+    try:
+        got = collector._gql_lookup(["Just Chatting"]).get("Just Chatting")
+    except Exception as e:
+        print(f"GQL Twitch недоступен ({e}) — проверку пропускаю", file=sys.stderr)
+        return
+    problems.check(bool(got) and got["url"].endswith("/just-chatting"),
+                   f"GQL Twitch не находит Just Chatting (ответ {got}) — сменился API, "
+                   "новые категории пойдут без ссылок")
 
 
 def main() -> int:
@@ -184,6 +210,8 @@ def main() -> int:
 
     check_catalog(problems, badges)
     check_events(problems, events)
+    if not use_snapshot:
+        check_category_resolver(problems)
     if use_snapshot or snapshot:
         src = snapshot if snapshot else {}
         check_availability(problems, src.get("events") or events,

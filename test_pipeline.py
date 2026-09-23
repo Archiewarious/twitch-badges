@@ -110,6 +110,8 @@ def test_format_drift(base):
         ("Twitch сменил схему URL картинок", break_image_urls),
         ("каталог обвалился", lambda s: s.__setitem__("badges", s["badges"][:10])),
         ("события опустели", lambda s: s.__setitem__("events", [])),
+        ("ссылки на категории перестали находиться",
+         lambda s: s.__setitem__("category_urls", {})),
     ]
     for name, mutate in cases:
         snap = copy.deepcopy(base)
