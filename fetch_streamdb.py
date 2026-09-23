@@ -413,148 +413,118 @@ def collect_badge_pages(build_id, events, badges):
 
 CATEGORY_URLS_FILE = DATA_DIR / "category_urls.json"
 TWITCH_DIRECTORY = "https://www.twitch.tv/directory/category/"
-OG_TITLE_RE = re.compile(r'<meta\s+property="og:title"\s+content="([^"]+)"')
+# GQL — тот же API, которым пользуется сам сайт twitch.tv; client-id публичный,
+# вшит в их фронтенд. Отдаёт НАСТОЯЩИЙ слаг категории, а он часто не выводится
+# из имени: «Rainbow Six Siege» живёт на /tom-clancys-rainbow-six-siege,
+# «Chess» — на /chess-1, «The Blood of Dawnwalker» — на /dawnwalker.
+TWITCH_GQL = "https://gql.twitch.tv/gql"
+TWITCH_GQL_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+UNKNOWN_GAME_RE = re.compile(r"Unknown Game \(ID: (\d+)\)")
+GQL_BATCH = 25
 
 
-# Twitch отдаёт разметку с og:title только браузерным клиентам; нашему обычному
-# User-Agent прилетает урезанная страница, и проверка ложно проваливалась.
-BROWSER_HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"),
-    "Accept-Language": "en-US,en;q=0.9",
-}
+def _gql_lookup(names):
+    """{имя: {"url", "name"} | None} одним запросом на пачку. None = Twitch такой
+    категории не знает. Сетевая ошибка → исключение: это не ответ «нет».
+
+    Раньше ссылку угадывали по имени и сверяли с og:title страницы. В сентябре
+    2026 Twitch перестал отдавать og:title, и проверка молча отвергала ВСЁ —
+    Overwatch, Roblox, Rainbow Six Siege: посты вышли без единой ссылки. GQL
+    отвечает по имени (понимает и сокращения: «GTAV», «Final Fantasy 14») или по
+    id — SD называет неизвестные ему игры «Unknown Game (ID: N)»."""
+    parts = []
+    for i, n in enumerate(names):
+        m = UNKNOWN_GAME_RE.fullmatch(n)
+        clean = re.sub(r"[\u2122\u00ae\u00a9]", "", n)
+        arg = f"id:{json.dumps(m.group(1))}" if m else f"name:{json.dumps(clean)}"
+        parts.append(f"g{i}:game({arg}){{name slug}}")
+    resp = SESSION.post(TWITCH_GQL, headers={"Client-Id": TWITCH_GQL_CLIENT_ID},
+                        json={"query": "query{" + " ".join(parts) + "}"}, timeout=20)
+    resp.raise_for_status()
+    data = resp.json().get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"GQL без data: {str(resp.text)[:200]}")
+    out = {}
+    for i, n in enumerate(names):
+        g = data.get(f"g{i}")
+        if not (g and g.get("slug")) and not UNKNOWN_GAME_RE.fullmatch(n):
+            g = _gql_search(n)
+        out[n] = ({"url": TWITCH_DIRECTORY + g["slug"], "name": g.get("name") or n}
+                  if g and g.get("slug") else None)
+    return out
 
 
-def category_slug(name: str) -> str:
-    """Имя категории Twitch → слаг директории: «Pokémon GO» → «pokemon-go».
-
-    Знаки ™ ® © и апострофы Twitch ВЫБРАСЫВАЕТ, а не заменяет дефисом: иначе
-    «LEGO® Batman™» дало бы «lego-batmantm», а «Tom Clancy's» — «tom-clancy-s»."""
+def _words(s):
     import unicodedata
-    s = unicodedata.normalize("NFKD", name or "")
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    s = s.lower().replace("&", " and ")
-    s = re.sub(r"[\u2122\u00ae\u00a9'\u2019]", "", s)
-    s = re.sub(r"[^a-z0-9]+", "-", s)
-    return s.strip("-")
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    return set(re.findall(r"[a-z0-9]+", re.sub(r"[\u2122\u00ae\u00a9'\u2019]", "", s)))
 
 
-def _no_article(slug: str) -> str:
-    for art in ("the-", "a-", "an-"):
-        if slug.startswith(art):
-            return slug[len(art):]
-    return slug
-
-
-def _slug_candidates(name: str):
-    """Возможные адреса категории. Twitch нередко держит её по УКОРОЧЕННОМУ пути:
-    «The Blood of Dawnwalker» лежит на /dawnwalker. Пробуем от полного к
-    короткому — проверка ниже всё равно отсеет неверное."""
-    full = category_slug(name)
-    out = [full]
-    parts = full.split("-")
-    if parts and parts[0] in ("the", "a", "an"):
-        out.append("-".join(parts[1:]))
-    if len(parts) > 1:
-        out.append(parts[-1])                      # «dawnwalker»
-        out.append("-".join(parts[-2:]))
-    seen, uniq = set(), []
-    for c in out:
-        if c and c not in seen:
-            seen.add(c)
-            uniq.append(c)
-    return uniq
-
-
-def verify_category_url(name: str):
-    """Проверенный URL категории или None.
-
-    Проверка обязательна: Twitch отвечает 200 на ЛЮБОЙ слаг, поэтому по коду
-    ответа догадку не отличить от правды, а битая ссылка в inline-кнопке роняет
-    весь ответ (Button_url_invalid). Настоящая страница категории отдаёт
-    og:title с её именем, выдуманная — не отдаёт вовсе.
-
-    Сверяем og:title с ИМЕНЕМ категории, а не со слагом: у Twitch адрес часто
-    короче названия (/dawnwalker → «The Blood of Dawnwalker»), и сверка со
-    слагом отвергала правильные ссылки."""
-    import time
-
-    want = category_slug(name)
-    if not want:
+def _gql_search(name):
+    """Точного имени Twitch не знает — ищем. SD и описания пишут вольно:
+    «Civilization VII» у Twitch — «Sid Meier's Civilization VII», «Ghost of
+    Yotei» — «Ghost of Yōtei». Берём первый результат, только если слова одного
+    названия целиком входят в другое: иначе поиск подсунет чужую игру."""
+    try:
+        resp = SESSION.post(TWITCH_GQL, headers={"Client-Id": TWITCH_GQL_CLIENT_ID}, json={
+            "query": "query($q:String!){searchCategories(query:$q,first:3)"
+                     "{edges{node{name slug}}}}", "variables": {"q": name}}, timeout=20)
+        resp.raise_for_status()
+        edges = (((resp.json().get("data") or {}).get("searchCategories") or {})
+                 .get("edges") or [])
+    except (requests.RequestException, ValueError):
         return None
-    for slug in _slug_candidates(name):
-        url = TWITCH_DIRECTORY + slug
-        try:
-            resp = SESSION.get(url, headers=BROWSER_HEADERS, timeout=20)
-            resp.raise_for_status()
-        except requests.RequestException:
-            continue
-        # Twitch не объявляет charset, и requests угадывает latin-1:
-        # «Pokémon GO» превращается в «PokÃ©mon GO», слаг не совпадает.
-        resp.encoding = "utf-8"
-        m = OG_TITLE_RE.search(resp.text)
-        if not m:
-            time.sleep(3)
-            continue
-        # og:title приходит с HTML-сущностями: «Co-working &amp; Studying».
-        # Без раскодирования «&amp;» превращается в «amp» и слаг не совпадает.
-        title = html.unescape(m.group(1)).rsplit(" - Twitch", 1)[0].strip()
-        # Сверяем без ведущего артикля: шаблон «in the X category» его съедает,
-        # и из «in The Blood of Dawnwalker category» мы получаем имя без «The»,
-        # тогда как Twitch зовёт категорию полностью.
-        if _no_article(category_slug(title)) == _no_article(want):
-            return url
-        time.sleep(2)
+    want = _words(name)
+    for e in edges:
+        node = e.get("node") or {}
+        got = _words(node.get("name"))
+        small = min(want, got, key=len)
+        if small and len(small) >= 2 and (want <= got or got <= want):
+            return node
     return None
 
 
-MAX_NEW_CATEGORIES_PER_RUN = 12
 MAX_VERIFY_TRIES = 4
 
 
 def resolve_category_urls(names):
-    """{имя категории: проверенный URL}. Результат кэшируется на диске, включая
-    отрицательный (url=null): без этого каждый refresh перепроверял бы одни и те
-    же категории, а неудачные — бесконечно.
-
-    Пишем ПОСЛЕ КАЖДОЙ проверки и берём не больше MAX_NEW_CATEGORIES_PER_RUN
-    новых имён за прогон. Первая версия копила всё в памяти и сохраняла в конце:
-    57 категорий с паузами между запросами занимали минуты, упирались в
-    TimeoutStartSec юнита, и вся работа терялась — файл не появлялся вообще, а
-    следующий refresh начинал заново."""
+    """({имя: URL}, {имя: каноническое имя Twitch}). Кэш на диске: dict — найдено,
+    число — сколько раз Twitch ответил «нет такой» (после MAX_VERIFY_TRIES
+    больше не спрашиваем). Сбой сети попыткой не считается и кэш не портит."""
     try:
         cache = json.loads(CATEGORY_URLS_FILE.read_text())
     except (OSError, ValueError):
         cache = {}
-    # Отрицательный ответ НЕ окончателен: Twitch троттлит частые запросы, отдавая
-    # 200 без og:title, и такая «неудача» намертво оседала в кэше — Overwatch,
-    # Brawlhalla и DJs числились неподтверждёнными, хотя категории существуют.
-    # Значение в кэше: строка = подтверждённый URL, число = сколько раз не вышло.
+
     def unresolved(name):
         v = cache.get(name)
-        if isinstance(v, str):
+        if isinstance(v, dict):
             return False
-        if name not in cache:
-            return True
-        return isinstance(v, int) and v < MAX_VERIFY_TRIES
+        return not isinstance(v, int) or v < MAX_VERIFY_TRIES
 
     todo = [n for n in names if n and unresolved(n)]
-    for name in todo[:MAX_NEW_CATEGORIES_PER_RUN]:
-        url = verify_category_url(name)
-        if url:
-            cache[name] = url
-        else:
-            prev = cache.get(name)
-            cache[name] = (prev if isinstance(prev, int) else 0) + 1
+    for i in range(0, len(todo), GQL_BATCH):
+        batch = todo[i:i + GQL_BATCH]
+        try:
+            found = _gql_lookup(batch)
+        except (requests.RequestException, ValueError, RuntimeError) as e:
+            print(f"GQL категорий недоступен ({e}) — ссылки берём из кэша", file=sys.stderr)
+            break
+        for n, v in found.items():
+            if v:
+                cache[n] = v
+            else:
+                prev = cache.get(n)
+                cache[n] = (prev if isinstance(prev, int) else 0) + 1
+    if todo:
         try:
             atomic_write_json(CATEGORY_URLS_FILE, cache)
         except OSError as e:
             print(f"не смог сохранить category_urls: {e}", file=sys.stderr)
-            break
-    if len(todo) > MAX_NEW_CATEGORIES_PER_RUN:
-        print(f"категорий к проверке ещё {len(todo) - MAX_NEW_CATEGORIES_PER_RUN} — "
-              "доберём следующими прогонами", file=sys.stderr)
-    return {k: v for k, v in cache.items() if isinstance(v, str)}
+    good = {k: v for k, v in cache.items() if isinstance(v, dict)}
+    return ({k: v["url"] for k, v in good.items()},
+            {k: v["name"] for k, v in good.items()})
 
 
 def download_image(url: str) -> bool:
@@ -619,8 +589,8 @@ def main() -> int:
     helix = fetch_badges.try_collect_info()
 
     # Ссылки на категории Twitch: SD убрал поле href 27.08.2026, и кнопка
-    # «Смотреть» пропала у восьми значков. Строим URL из имени категории и
-    # ПРОВЕРЯЕМ его (Twitch отвечает 200 на любой слаг — см. verify_category_url).
+    # «Смотреть» пропала у восьми значков. Настоящий адрес спрашиваем у самого
+    # Twitch (см. resolve_category_urls).
     cat_names = set()
     for ev in events:
         for b in ev.get("twitch_global_badges") or []:
@@ -642,7 +612,7 @@ def main() -> int:
         cat = fetch_badges.category_from_description(ev.get("content"))
         if cat:
             cat_names.add(cat)
-    category_urls = resolve_category_urls(sorted(n for n in cat_names if n))
+    category_urls, category_names = resolve_category_urls(sorted(n for n in cat_names if n))
 
     # Экономия хранения: списки участников (EWC ~1387 стримеров и т.п.) — это ~90%
     # снапшота, а боту/сайту нужен только ФАКТ наличия каналов (детали — логины/аватары —
@@ -663,6 +633,7 @@ def main() -> int:
         "page_info": page_info,
         "page_availability": page_avail,
         "category_urls": category_urls,
+        "category_names": category_names,
         "helix": helix,
     }
 

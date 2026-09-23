@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Пре-рендер карточек бейджей 640×360 для inline-выдачи и постов в канал.
+Пре-рендер карточек бейджей 640×640 для inline-выдачи и постов в канал.
 
 Значки Twitch отдаются CDN максимум в 72px с прозрачным фоном — крупно и красиво
 их можно показать только на подложке-карточке (что тут и делаем): значок на светлом
@@ -106,9 +106,12 @@ def soft_glow_bg(base_col, glow_col):
 def render_card(r, out_path):
     """Значок как app-icon по центру. Фон автоматически строится в тон значку
     (доминирующий цвет), цвет чипа — под яркость значка. Без ИИ."""
-    chip_s = 360
+    # Сверху название, снизу плашка цены — карточка должна объяснять себя сама:
+    # в inline-выдаче и при пересылке подписи часто не видно, а голый значок
+    # без имени ни о чём не говорит.
+    chip_s = 330
     chip_x = (W - chip_s) // 2
-    chip_y = (H - chip_s) // 2
+    chip_y = 150
 
     # Грузим значок первым — от него зависят и цвет фона, и цвет чипа
     key = collector.image_cache_key(r["image"])
@@ -157,7 +160,78 @@ def render_card(r, out_path):
         # честно и достаточно, чтобы анонс вышел вовремя.
         draw_title_text(d, r.get("title") or "", chip_x, chip_y, chip_s, chip)
 
+    draw_card_title(d, r.get("title") or "")
+    draw_cost_pill(d, r.get("cost"), chip_y + chip_s + 42)
     img.save(out_path, "PNG")
+
+
+def _font(size):
+    try:
+        return ImageFont.truetype(str(FONT_FILE), size)
+    except OSError:
+        return ImageFont.load_default(size=size)
+
+
+def _split2(d, title, font, maxw):
+    """Лучший перенос на две строки (самая длинная строка — минимальна)."""
+    words = title.split()
+    best = None
+    for i in range(1, len(words)):
+        l1, l2 = " ".join(words[:i]), " ".join(words[i:])
+        w = max(d.textlength(l1, font=font), d.textlength(l2, font=font))
+        if best is None or w < best[0]:
+            best = (w, [l1, l2])
+    return best
+
+
+def draw_card_title(d, title):
+    """Название значка над чипом (полоса y 20…130): одна строка, если влезает
+    крупно, иначе две; обрезаем только то, что не влезло и в две."""
+    if not title:
+        return
+    maxw = W - 80
+    lines, size = None, 56
+    while size >= 40:
+        if d.textlength(title, font=_font(size)) <= maxw:
+            lines = [title]
+            break
+        size -= 2
+    if lines is None:
+        for size in range(40, 25, -2):
+            best = _split2(d, title, _font(size), maxw)
+            if best and best[0] <= maxw:
+                lines = best[1]
+                break
+    if lines is None:                                  # совсем длинное — режем
+        size = 26
+        font = _font(size)
+        t = title
+        while t and d.textlength(t + "…", font=font) > maxw:
+            t = t[:-1]
+        lines = [t.rstrip() + "…"]
+    font = _font(size)
+    line_h = int(size * 1.2)
+    y = 75 - len(lines) * line_h // 2
+    for ln in lines:
+        w = d.textlength(ln, font=font)
+        d.text(((W - w) / 2 + 2, y + 3), ln, font=font, fill=(0, 0, 0))   # тень
+        d.text(((W - w) / 2, y), ln, font=font, fill=(245, 247, 250))
+        y += line_h
+
+
+COST_PILL = {"free": ("БЕСПЛАТНО", (46, 160, 90)), "paid": ("ПЛАТНО", (214, 120, 40))}
+
+
+def draw_cost_pill(d, cost, cy):
+    if cost not in COST_PILL:
+        return
+    text, color = COST_PILL[cost]
+    font = _font(26)
+    tw = d.textlength(text, font=font)
+    pw, ph = tw + 56, 48
+    x0, y0 = (W - pw) / 2, cy - ph / 2
+    d.rounded_rectangle([x0, y0, x0 + pw, y0 + ph], radius=ph / 2, fill=color)
+    d.text(((W - tw) / 2, y0 + 8), text, font=font, fill=(255, 255, 255))
 
 
 def draw_title_text(d, title, chip_x, chip_y, chip_s, chip_color):

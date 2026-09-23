@@ -1433,7 +1433,7 @@ def add_orphan_event_records(records, snapshot, now):
 def build_records(snapshot):
     now = datetime.now(timezone.utc)
     global _CATEGORY_URLS
-    _CATEGORY_URLS = snapshot.get("category_urls") or {}
+    _CATEGORY_URLS = dict(snapshot.get("category_urls") or {})
     global _HELIX
     _HELIX = snapshot.get("helix") or {}
     global _PAGE_AVAIL
@@ -1499,7 +1499,39 @@ def build_records(snapshot):
     for rec in raw:
         by_set.setdefault(rec["set_id"], []).append(rec)
     records = [aggregate_family(members) for members in by_set.values()]
-    return add_orphan_event_records(records, snapshot, now)
+    records = add_orphan_event_records(records, snapshot, now)
+    return canonicalize_categories(records, snapshot.get("category_names") or {})
+
+
+def canonicalize_categories(records, names):
+    """Имена категорий — как их зовёт сам Twitch, и ссылка к каждой.
+
+    Источники пишут вольно: SD — «Unknown Game (ID: 13263)» для незнакомых ему
+    игр, описания — «TFT», «COD: Black Ops 7». Читатель ищет категорию на Twitch
+    по тому, что видит в посте, так что показываем имя оттуда же, откуда ссылка
+    (fetch_streamdb.resolve_category_urls)."""
+    def canon(n):
+        return names.get(n) or n
+    for r in records:
+        w = r.get("window")
+        if not w:
+            continue
+        g = w.get("game")
+        if g:
+            if not w.get("category_href"):
+                w["category_href"] = category_url_for(g)
+            w["game"] = canon(g)
+        if w.get("categories"):
+            out = []
+            for n in w["categories"]:
+                c = canon(n)
+                if c not in out:
+                    out.append(c)
+                url = category_url_for(n)
+                if url and not category_url_for(c):
+                    _CATEGORY_URLS[c] = url
+            w["categories"] = out
+    return records
 
 
 COST_LABEL = {"paid": "платно", "free": "бесплатно"}

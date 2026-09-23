@@ -141,7 +141,7 @@ def esc(s):
 # Telegram кэширует inline-картинки по URL. uuid карточки завязан на значок и не
 # меняется при редизайне — поэтому версионируем URL, чтобы после смены дизайна
 # Telegram перезабрал новую карточку. Бампать при каждом изменении вида карточки.
-CARD_VERSION = 10
+CARD_VERSION = 11
 
 
 def card_url(r):
@@ -230,6 +230,10 @@ def window_vague(w):
 
 
 def window_line(r):
+    return f"📅 {window_text(r)}"
+
+
+def window_text(r):
     """Полное окно с датой и временем (МСК). Неизвестно — так и пишем.
     Для окон, разобранных из текста описания (from_page), время показываем только
     если оно там реально было — иначе 00:00 было бы выдуманной точностью."""
@@ -240,12 +244,12 @@ def window_line(r):
     tail = " (МСК)" if (st or et) else ""
     note = " · точные даты уточняются" if w.get("dates_unconfirmed") else ""
     if s and e:
-        return f"📅 С {fmt_dt(s, st)} до {fmt_dt(e, et)}{tail}{note}"
+        return f"С {fmt_dt(s, st)} до {fmt_dt(e, et)}{tail}{note}"
     if e:
-        return f"📅 До {fmt_dt(e, et)}{tail}{note}"
+        return f"До {fmt_dt(e, et)}{tail}{note}"
     if s:
-        return f"📅 С {fmt_dt(s, st)}{tail}{note}"
-    return "📅 Даты пока неизвестны"
+        return f"С {fmt_dt(s, st)}{tail}{note}"
+    return "Даты пока неизвестны"
 
 
 STAGE_SEP = ", затем "
@@ -369,7 +373,20 @@ def plural_cat(n):
 
 
 def how_short(r):
-    """Компактно: как получить + куда идти за значком."""
+    """Компактно, одной строкой (inline и альбомы)."""
+    return f"📍 {how_text(r)}"
+
+
+def _to_streamer(cond):
+    """«Подписка или гифт» → «…любому стримеру»: без этого читатель не понимает,
+    что подписываться можно на кого угодно в категории, а не на конкретный канал."""
+    if re.search(r"(?i)(подписка|гифт)$", cond):
+        return f"{cond} любому стримеру"
+    return cond
+
+
+def how_text(r):
+    """Как получить + куда идти за значком."""
     cond = short_cond(r.get("condition"), (r.get("window") or {}).get("from_manual"))
     kind, label, url = watch_target(r)
     grp = r.get("group") or ""
@@ -383,31 +400,32 @@ def how_short(r):
                      "event": "смотри каналы события",
                      "channel": "смотри канал",
                      "external": "подробности —"}[kind]
-            return f'📍 Условия уточняются · {where} <a href="{esc(url)}">{esc(label)}</a>'
+            return f'Условия уточняются · {where} <a href="{esc(url)}">{esc(label)}</a>'
         many = categories_line(r)
         if many:
-            return f"📍 Условия уточняются · {many}"
+            return f"Условия уточняются · {many}"
         if (r.get("window") or {}).get("channel_count"):
-            return f"📍 Условия уточняются · у участвующих стримеров{grp_tail}"
-        return "📍 Условия уточняются"
+            return f"Условия уточняются · у участвующих стримеров{grp_tail}"
+        return "Условия уточняются"
 
     game = (r.get("window") or {}).get("game")
     if url and not (kind == "external" and game):
         prep = {"category": "в категории", "event": "на каналах события",
                 "channel": "у стримера", "external": "—"}[kind]
-        return f'📍 {esc(cond)} {prep} <a href="{esc(url)}">{esc(label)}</a>'
+        c = _to_streamer(cond) if kind == "category" else cond
+        return f'{esc(c)} {prep} <a href="{esc(url)}">{esc(label)}</a>'
     # Категория известна, а проверенной ссылки на неё нет (Twitch называет её
     # иначе — «Tom Clancy\'s Rainbow Six Siege»). Тогда пишем категорию текстом:
     # вести читателя вместо неё на страницу магазина — обман, значок там не дают.
     if game:
-        return f"📍 {esc(cond)} в категории {esc(game)}"
+        return f"{esc(_to_streamer(cond))} в категории {esc(game)}"
     many = categories_line(r)
     if many:
-        return f"📍 {esc(cond)} {many}"
+        return f"{esc(cond)} {many}"
     # Каналовый бейдж без курируемой ссылки — просто чёткий текст, без битых ссылок.
     if (r.get("window") or {}).get("channel_count"):
-        return f"📍 {esc(cond)} — у участвующих стримеров{grp_tail}"
-    return f"📍 {esc(cond)}"
+        return f"{esc(cond)} — у участвующих стримеров{grp_tail}"
+    return esc(cond)
 
 
 def footer_line():
@@ -681,32 +699,38 @@ def cost_word(r):
     return {"paid": "платный", "free": "бесплатный"}.get(r.get("cost"), "")
 
 
+CHANNEL_HEADS = {
+    "appeared_active": "🎁 <b>Новый значок — можно получить уже сейчас!</b>",
+    "active_short": "⚡ <b>Доступно сейчас — но ненадолго!</b>",
+    "appeared_upcoming": "📣 <b>Скоро новый значок</b>",
+    "dates_confirmed": "⏰ <b>Уточнили время</b>",
+    "cond_confirmed": "📝 <b>Стало известно, как получить</b>",
+    "started": "▶️ <b>Стартовало — можно получать сейчас!</b>",
+    "ending": "⏳ <b>Последний день! Успей получить</b>",
+}
+
+
 def channel_header(kind, r):
-    name = f'<b>{esc(r["title"])}</b>'
+    """Две строки: что случилось + какой значок. Цена — прямо в имени: это
+    первое, что читатель хочет знать, решая, читать ли дальше."""
     cw = cost_word(r)
-    if kind == "appeared_active":
-        head = f"Новый {cw} значок" if cw else "Новый значок"   # без cw был двойной пробел
-        return f'🎁 <b>Можно получить уже сейчас!</b>\n{head} {name}'
-    if kind == "active_short":
-        head = f"{cw.capitalize()} значок" if cw else "Значок"
-        return f'⚡ <b>Доступно сейчас — но ненадолго!</b>\n{head} {name}'
-    if kind == "appeared_upcoming":
-        head = (cw.capitalize() + " значок") if cw else "Значок"
-        return f'📅 <b>Скоро новый значок</b>\n{head} {name}'
-    if kind == "dates_confirmed":
-        return f'⏰ <b>Уточнили время</b>\n{name}'
-    if kind == "cond_confirmed":
-        return f'📝 <b>Стало известно, как получить</b>\n{name}'
-    if kind == "started":
-        return f'▶️ <b>Стартовало — можно получать сейчас!</b>\n{name}'
-    if kind == "ending":
-        return f'⏳ <b>Последний день! Успей получить</b>\n{name}'
-    return name
+    badge = f"{COST_EMOJI.get(r.get('cost'), '🏷')} {cw.capitalize() + ' значок' if cw else 'Значок'}"
+    name = f"{badge} <b>{esc(r['title'])}</b>"
+    head = CHANNEL_HEADS.get(kind)
+    return f"{head}\n{name}" if head else name
 
 
 def channel_caption(kind, r):
-    # Статус несёт заголовок жизненного цикла → в теле полное окно с временем.
-    return build_caption([channel_header(kind, r), window_line(r)], r)
+    """Пост в канал — разделами с заголовками: «как получить» и «когда» читаются
+    отдельно и находятся взглядом, а не выковыриваются из сплошного абзаца."""
+    parts = [channel_header(kind, r), "",
+             "❓ <b>Как получить</b>", how_text(r), "",
+             "📅 <b>Когда</b>", window_text(r)]
+    note = art_disclaimer(r)
+    if note:
+        parts += ["", note]
+    parts += ["", footer_line()]
+    return "\n".join(parts)
 
 
 def channel_buttons(r):
