@@ -118,6 +118,21 @@ def test_format_drift(base):
         mutate(snap)
         check(name, bool(format_problems(snap)), "поломка прошла незамеченной")
 
+    # Косметическое поле поменяло форму — сбор обязан пережить это молча.
+    # 27.09.2026 user_count из {"current": N} стал числом, build_records упал, и
+    # данные простояли полтора дня.
+    for name, val in [("user_count — число", 5), ("user_count — строка", "5"),
+                      ("user_count — список", [1])]:
+        snap = copy.deepcopy(base)
+        for b in snap["badges"]:
+            b["user_count"] = val
+        try:
+            quiet(site.build_records, snap)
+            ok, why = True, ""
+        except Exception as e:
+            ok, why = False, repr(e)
+        check(f"косметическое поле сменило форму: {name} — сбор не падает", ok, why)
+
     check("на настоящих данных ложных срабатываний нет",
           not format_problems(copy.deepcopy(base)),
           "; ".join(format_problems(copy.deepcopy(base))))

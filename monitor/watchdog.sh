@@ -27,9 +27,14 @@ if [ -f "$LATEST" ]; then
     else
       WHO="ИСТОЧНИК НЕ ОТВЕЧАЕТ (streamdatabase.com) — почти наверняка это он, а не бот; данные догонят сами, когда он поднимется"
     fi
+    # Последняя ошибка сбора прямо в тревоге: 27.09.2026 SD сменил формат поля,
+    # и «смотри журнал» стоило владельцу дня догадок, хотя причина — одна строка.
+    ERR=$(journalctl -u twitch-badges-refresh.service --since "-3 hours" --no-pager -o cat 2>/dev/null \
+          | grep -E "^[A-Za-z_.]*(Error|Exception)\b|RuntimeError" | tail -1 | cut -c1-200)
     "$ALERT" data-stale "данные протухли" \
       "streamdb_latest.json не обновлялся $(( age/60 )) мин (порог $(( STALE_MAX/60 )) мин).
 $WHO
+Последняя ошибка сбора: ${ERR:-не найдена}
 Смотреть: journalctl -u twitch-badges-refresh.service -n 50"
   else
     "$ALERT" --clear data-stale "данным $(( age/60 )) мин"

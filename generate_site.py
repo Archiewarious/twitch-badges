@@ -1430,6 +1430,15 @@ def add_orphan_event_records(records, snapshot, now):
     return records + out
 
 
+def holders_count(uc):
+    """Число владельцев значка. SD отдавал {"current": N}, с 27.09.2026 — просто N.
+    Читаем оба вида: счётчик косметический, и из-за него нельзя ронять весь
+    сбор (так и вышло — данные простояли полтора дня)."""
+    if isinstance(uc, dict):
+        uc = uc.get("current")
+    return uc if isinstance(uc, int) and not isinstance(uc, bool) else None
+
+
 def build_records(snapshot):
     now = datetime.now(timezone.utc)
     global _CATEGORY_URLS
@@ -1484,7 +1493,7 @@ def build_records(snapshot):
             "set_id": set_id,
             "title": version.get("title") or set_id,
             "image": version.get("image_url_4x", ""),
-            "holders": (b.get("user_count") or {}).get("current"),
+            "holders": holders_count(b.get("user_count")),
             "first_seen": badge_first_seen(b),
             "status": cls["status"],
             "group": cls["group"],
