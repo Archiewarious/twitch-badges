@@ -508,3 +508,59 @@ def category_url_for(urls, name):
         if _cat_key(k) == want:
             return v
     return None
+
+
+# ── лимиты подписей (B4) ──
+
+def tg_len(s: str) -> int:
+    """Длина в единицах Telegram (UTF-16). Считаем по HTML целиком — с запасом:
+    лимит применяется к тексту без тегов, а он всегда короче."""
+    return len((s or "").encode("utf-16-le")) // 2
+
+
+def _shorten(text, n):
+    text = (text or "").strip()
+    if len(text) <= n:
+        return text
+    cut = text[:n].rsplit(" ", 1)[0].rstrip(",;:—- ")
+    return (cut or text[:n]) + "…"
+
+
+def _variants(r):
+    """Запись со всё более короткими необязательными частями: сначала дисклеймер
+    арта, потом хвост условия, в самом конце — название."""
+    yield r
+    r = dict(r, art_placeholder_from=None)
+    yield r
+    cond = r.get("condition") or ""
+    for n in (300, 160, 80, 40):
+        if len(cond) > n:
+            yield dict(r, condition=_shorten(cond, n))
+    r = dict(r, condition=_shorten(cond, 40) if cond else cond)
+    for n in (120, 60):
+        if len(r.get("title") or "") > n:
+            yield dict(r, title=_shorten(r["title"], n))
+
+
+def fit_channel_caption(kind, r, urls=None, limit=CAPTION_LIMIT):
+    """Подпись одиночного поста, гарантированно не длиннее лимита. Раньше
+    длинная подпись давала BadRequest на каждом тике, и пост не уходил никогда."""
+    last = None
+    for v in _variants(r):
+        last = channel_caption(kind, v, urls)
+        if tg_len(last) <= limit:
+            return last
+    raise ValueError(f"подпись {r.get('set_id')} не укладывается в {limit}: {tg_len(last)}")
+
+
+def fit_album_caption(items, kind, group, urls=None, limit=CAPTION_LIMIT):
+    """Подпись альбома; для одной записи — с укорачиванием, как у одиночного поста."""
+    cap = album_caption(items, kind, group, urls)
+    if tg_len(cap) <= limit or len(items) != 1:
+        return cap
+    key, r = items[0]
+    for v in _variants(r):
+        cap = album_caption([(key, v)], kind, group, urls)
+        if tg_len(cap) <= limit:
+            return cap
+    raise ValueError(f"подпись альбома {key} не укладывается в {limit}")

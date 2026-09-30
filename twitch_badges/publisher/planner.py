@@ -197,10 +197,12 @@ def find_orphan(key, r, campaigns, live, cfg: PlanConfig):
 # ── главное ──
 
 def plan(records, campaigns: dict, aliases: dict, *, now: datetime, data_at: datetime,
-         has_art, cfg: PlanConfig = PlanConfig()) -> PlanResult:
+         has_art, cfg: PlanConfig = PlanConfig(), busy=frozenset()) -> PlanResult:
     """records — записи из текущего снапшота, посчитанные с этим же now.
     campaigns — {id: store.Campaign} (со stages), aliases — {alias: id}.
-    data_at — когда закоммичен снапшот. has_art(r) — есть ли настоящий арт."""
+    data_at — когда закоммичен снапшот. has_art(r) — есть ли настоящий арт.
+    busy — кампании, чей последний пост ещё не доставлен (или упал): знание
+    читателя о них не обновлено, и планировать по нему нельзя."""
     res = PlanResult()
     live = live_records(records, now)
     aliases = dict(aliases)
@@ -227,6 +229,9 @@ def plan(records, campaigns: dict, aliases: dict, *, now: datetime, data_at: dat
         c = campaigns.get(cid)
         if c is not None:
             res.seen_live.append(cid)
+        if cid in busy:
+            res.held.append((cid, None, "предыдущий пост ещё не доставлен"))
+            continue
         if not has_art(r):
             # Без настоящего арта в канал не идём и кампанию не заводим: когда
             # Twitch выложит картинку, значок объявится обычным порядком.
