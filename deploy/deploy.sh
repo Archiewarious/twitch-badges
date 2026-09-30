@@ -86,7 +86,11 @@ for f in "$REL"/deploy/systemd/tb-*; do
   dst="$TB_UNITS/$(basename "$f")"
   if ! cmp -s "$f" "$dst"; then install -m 0644 "$f" "$dst"; changed=1; fi
 done
-[ "$changed" = 1 ] && "$SYSTEMCTL" daemon-reload
+if [ "${TB_NO_ROOT:-0}" != 1 ]; then
+  systemd-analyze verify "$TB_UNITS"/tb-*.service "$TB_UNITS"/tb-*.timer \
+    || die "systemd-analyze verify нашёл ошибки в юнитах"
+fi
+if [ "$changed" = 1 ]; then "$SYSTEMCTL" daemon-reload; fi
 
 # 5. Переключение симлинка (атомарно)
 PREV="$(readlink "$TB_BASE/current" 2>/dev/null || true)"

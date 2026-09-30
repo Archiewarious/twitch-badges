@@ -1,18 +1,12 @@
 # --- секреты и рантайм-данные (никогда в git) ---
 .env
 data/
-
-# --- сгенерированный сайт (по договорённости — сайт отдельно) ---
-site/
-camouflage_backup/
+data-tb/
+data.local-old/
 
 # --- python окружения и кэши ---
 venv/
-bot/venv/
 __pycache__/
 *.pyc
 *.log
-bot/*.log
-
-# fetch_badges.py БОЛЬШЕ НЕ legacy: с 31.08.2026 это второй источник данных
-# (Helix), его импортирует fetch_streamdb.py — без него свежий клон не соберётся.
+.pytest_cache/

@@ -54,7 +54,9 @@ twitch_badges/
   alerts.py      каталог алертов  ·  monitors.py  ·  media.py  карточки в Telegram
 deploy/          systemd/tb-*, deploy.sh, rollback.sh, env.example
 monitor/         watchdog.sh, alert.sh (bash + curl)
-tests/           pytest; tools/legacy_sim — харнесс старой логики для сравнения
+tests/           pytest
+tools/legacy_sim/ старая логика (legacy/) и харнесс для сравнения и проверки отката
+manual/          overrides.json (ручные данные), ignore.txt (молчащие значки без алерта)
 ```
 
 ---
@@ -160,7 +162,7 @@ tb doctor && sudo systemctl start tb-collector.timer tb-bot.service
 | `post-unknown` | не удалось понять, ушёл ли пост | посмотреть канал; `/sent <id>` или `/resend <id>` |
 | `telegram-unreachable` | > 15 мин нет связи с Telegram | обычно ждать |
 | `burst` | > 5 групп в очереди | если это мусор — `/pause` |
-| `anomalies`, `blindspots` | пробел данных источника | обычно ничего; `manual/overrides.json` или ignore |
+| `anomalies`, `blindspots` | пробел данных источника | обычно ничего; `manual/overrides.json` или `manual/ignore.txt` |
 | `helix-auth` | Twitch не принимает ключи | проверить приложение на dev.twitch.tv |
 | `overrides-invalid` | ошибка в `manual/overrides.json` | исправить запись |
 | `db-integrity` | БД повреждена, постинг остановлен | «Восстановление из бэкапа» |

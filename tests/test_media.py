@@ -198,6 +198,7 @@ def test_card_same_as_old_renderer(tmp_path):
     img = tmp_path / "img"
     images.sync_images(recs, img, lambda u: (200, "image/png", png()))
     render_cards.IMAGES_DIR = img
+    render_cards.FONT_FILE = cards.FONT_FILE
     for r in recs:
         render_cards.render_card(r, tmp_path / "old.png")
         assert cards.render_card(r, img) == (tmp_path / "old.png").read_bytes()

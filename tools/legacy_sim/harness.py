@@ -1,4 +1,4 @@
-"""Харнесс СТАРОЙ логики публикации (bot/bot.py + generate_site.py) для тестов.
+"""Харнесс СТАРОЙ логики публикации (legacy/bot/bot.py + legacy/generate_site.py).
 
 Гоняет настоящий `publish_new` на отдельном каталоге данных с подменёнными
 часами, фейковым Telegram и заглушками алертов. Сеть не трогается, боевой
@@ -27,6 +27,8 @@ from datetime import datetime as _dt, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+# Замороженная копия старого кода (прод до переключения, с хотфиксом C02).
+LEGACY = Path(__file__).resolve().parent / "legacy"
 
 # Всё окружение задаём явно ДО импорта бота: он читает его на уровне модуля.
 # Значения из чужого .env (если харнесс запустят в прод-папке) не перекроют эти.
@@ -56,7 +58,7 @@ class FrozenDatetime(_dt):
 
 def _import_legacy():
     os.environ.update(_ENV)
-    for p in (str(REPO), str(REPO / "bot")):
+    for p in (str(LEGACY), str(LEGACY / "bot")):
         if p not in sys.path:
             sys.path.insert(0, p)
     with contextlib.redirect_stderr(io.StringIO()):

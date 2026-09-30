@@ -8,7 +8,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 FIXTURES = REPO / "tests" / "fixtures"
-for p in (REPO, REPO / "tools" / "legacy_sim", REPO / "tests"):
+for p in (REPO, REPO / "tools" / "legacy_sim", REPO / "tools" / "legacy_sim" / "legacy",
+          REPO / "tests"):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 

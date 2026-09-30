@@ -49,6 +49,7 @@ class Config:
     sd_base_url: str = "https://www.streamdatabase.com"
     faults: frozenset = frozenset()
     overrides_file: Path = Path(__file__).resolve().parent.parent / "manual" / "overrides.json"
+    ignore_file: Path = Path(__file__).resolve().parent.parent / "manual" / "ignore.txt"
 
     @property
     def db_path(self) -> Path:

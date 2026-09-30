@@ -215,7 +215,7 @@ class BotApp:
         if snap:
             recs, _ = self.records()
             monitors.blindspots(self.conn, snap.data, recs, db.utcnow(),
-                                monitors.load_ignore(self.cfg.data_dir / "ignore.txt"))
+                                monitors.load_ignore(self.cfg.ignore_file))
 
     async def job_backup(self, ctx):
         now = db.utcnow()
@@ -307,7 +307,7 @@ class BotApp:
                 with db.tx(self.conn):
                     alerts.raise_alert(self.conn, "bot-conflict", "запущен второй экземпляр бота",
                                        "Telegram отдаёт обновления другому процессу с тем же токеном. "
-                                       "Остановить старую установку: sudo systemctl stop twitch-badges-bot")
+                                       "Остановить старую установку: юнит twitch-badges-bot (systemctl stop).")
             return
         log.error("ошибка обработки: %s", err, exc_info=err)
 
