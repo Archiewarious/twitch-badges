@@ -1,0 +1,322 @@
+"""Карточки значков 640×640 для постов и inline (перенос render_cards.py).
+
+Изменения против старого кода: карточка отдаётся байтами, файл переписывается
+только при смене содержимого (sha256), — раньше все ~40 карточек рисовались и
+заливались заново каждые 30 минут (F5). В карточку не запекаем ничего, что
+меняется со временем (даты): её file_id в Telegram живёт, пока не сменится вид.
+"""
+import colorsys
+import hashlib
+import io
+import os
+import tempfile
+from collections import Counter
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+from .domain.catalog import image_cache_key
+
+FONT_FILE = Path(__file__).resolve().parent.parent / "assets" / "Manrope-Bold.ttf"
+
+# Квадрат: Telegram в inline-сетке режет широкие картинки по бокам (значок слева
+# пропадает). Квадрат с центрированным значком влезает в ячейку целиком.
+W, H = 640, 640
+
+NEUTRAL_BG = (14, 20, 33)      # фон для серых значков (нет доминирующего цвета)
+NEUTRAL_GLOW = (34, 46, 72)
+LIGHT_CHIP = (236, 239, 245)   # для тёмных значков
+DARK_CHIP = (33, 43, 66)       # для светлых значков (чтобы белые кольца не сливались)
+
+
+def badge_luminance(icon):
+    """Средняя яркость непрозрачных пикселей значка (0–255, взвешено по альфе)."""
+    small = icon.convert("RGBA").resize((32, 32), Image.LANCZOS)
+    px = small.load()
+    tot = cnt = 0
+    for y in range(32):
+        for x in range(32):
+            r, g, b, a = px[x, y]
+            if a > 40:
+                lum = 0.299 * r + 0.587 * g + 0.114 * b
+                tot += lum * a
+                cnt += a
+    return (tot / cnt) if cnt else 128.0
+
+
+def chip_for(lum):
+    """Светлый значок → тёмный чип, тёмный значок → светлый чип (контраст под любой)."""
+    return DARK_CHIP if lum > 140 else LIGHT_CHIP
+
+
+def accent_color(icon):
+    """Доминирующий насыщенный цвет значка (без ИИ — квантование + вес по насыщенности).
+    Возвращает (r,g,b) или None, если значок по сути серый."""
+    small = icon.convert("RGBA").resize((48, 48), Image.LANCZOS)
+    px = small.load()
+    buckets = Counter()
+    for y in range(48):
+        for x in range(48):
+            r, g, b, a = px[x, y]
+            if a < 80:
+                continue
+            mx, mn = max(r, g, b), min(r, g, b)
+            sat = (mx - mn) / mx if mx else 0
+            if sat < 0.18 or mx < 40:      # серое/почти чёрное — не цвет
+                continue
+            # округляем в корзины 32×32×32, копим вес = насыщенность
+            buckets[(r // 32, g // 32, b // 32)] += 0.3 + sat
+    if not buckets:
+        return None
+    rk, gk, bk = buckets.most_common(1)[0][0]
+    return (rk * 32 + 16, gk * 32 + 16, bk * 32 + 16)
+
+
+def _hls_color(color, lightness, sat_cap):
+    r, g, b = (x / 255 for x in color)
+    h, _, s = colorsys.rgb_to_hls(r, g, b)
+    r2, g2, b2 = colorsys.hls_to_rgb(h, lightness, min(s, sat_cap))
+    return tuple(int(x * 255) for x in (r2, g2, b2))
+
+
+def bg_colors(accent):
+    """Из акцента значка → (тёмная база фона, цвет свечения). Приглушённо, премиально."""
+    if accent is None:
+        return NEUTRAL_BG, NEUTRAL_GLOW
+    return _hls_color(accent, 0.11, 0.5), _hls_color(accent, 0.30, 0.62)
+
+
+def soft_glow_bg(base_col, glow_col):
+    """Тёмный фон base с мягким свечением glow по центру (гауссово размытие)."""
+    base = Image.new("RGB", (W, H), base_col)
+    mask = Image.new("L", (W, H), 0)
+    rad = 270
+    ImageDraw.Draw(mask).ellipse(
+        [W // 2 - rad, H // 2 - rad - 10, W // 2 + rad, H // 2 + rad - 10], fill=225)
+    mask = mask.filter(ImageFilter.GaussianBlur(130))
+    return Image.composite(Image.new("RGB", (W, H), glow_col), base, mask)
+
+
+def render_card(r, images_dir: Path) -> bytes:
+    """Значок как app-icon по центру. Фон автоматически строится в тон значку
+    (доминирующий цвет), цвет чипа — под яркость значка. Без ИИ."""
+    # Сверху название, снизу плашка цены — карточка должна объяснять себя сама:
+    # в inline-выдаче и при пересылке подписи часто не видно, а голый значок
+    # без имени ни о чём не говорит.
+    chip_s = 330
+    chip_x = (W - chip_s) // 2
+    chip_y = 150
+
+    # Грузим значок первым — от него зависят и цвет фона, и цвет чипа
+    key = image_cache_key(r["image"])
+    icon_path = Path(images_dir) / f"{key}.png" if key else None
+    icon = None
+    chip = LIGHT_CHIP
+    base_col, glow_col = NEUTRAL_BG, NEUTRAL_GLOW
+    if icon_path and icon_path.exists():
+        try:
+            icon = Image.open(icon_path).convert("RGBA")
+            chip = chip_for(badge_luminance(icon))
+            base_col, glow_col = bg_colors(accent_color(icon))
+        except Exception:
+            icon = None
+
+    img = soft_glow_bg(base_col, glow_col)
+
+    # Мягкая тень под чипом
+    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        [chip_x, chip_y + 18, chip_x + chip_s, chip_y + chip_s + 18],
+        radius=76, fill=(0, 0, 0, 150))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(30))
+    img = Image.alpha_composite(img.convert("RGBA"), shadow).convert("RGB")
+
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([chip_x, chip_y, chip_x + chip_s, chip_y + chip_s], radius=76, fill=chip)
+    # Тонкая обводка чипа — отделяет тёмный чип от тёмного фона
+    d.rounded_rectangle([chip_x, chip_y, chip_x + chip_s, chip_y + chip_s], radius=76,
+                        outline=(255, 255, 255, 30), width=2)
+
+    if icon is not None:
+        try:
+            box = 224  # значок 72px → ~3x; крупнее нельзя, пойдёт мыло
+            ic = icon.resize((box, box), Image.LANCZOS) if icon.width < box else icon.copy()
+            ic.thumbnail((box, box), Image.LANCZOS)
+            img.paste(ic, (chip_x + (chip_s - ic.width) // 2,
+                           chip_y + (chip_s - ic.height) // 2), ic)
+        except Exception:
+            pass
+    else:
+        # Значка нет вовсе — кампания анонсирована, а Twitch арт ещё не выложил
+        # (LEGO Harley Quinn/Joker: у SD есть точные даты и условие, объекта
+        # значка нет). Раньше такие посты не уходили СОВСЕМ: post_badge молча
+        # пропускает запись без картинки. Рисуем название кампании текстом —
+        # честно и достаточно, чтобы анонс вышел вовремя.
+        draw_title_text(d, r.get("title") or "", chip_x, chip_y, chip_s, chip)
+
+    draw_card_title(d, r.get("title") or "")
+    draw_cost_pill(d, r.get("cost"), chip_y + chip_s + 42)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _font(size):
+    try:
+        return ImageFont.truetype(str(FONT_FILE), size)
+    except OSError:
+        return ImageFont.load_default(size=size)
+
+
+def _split2(d, title, font, maxw):
+    """Лучший перенос на две строки (самая длинная строка — минимальна)."""
+    words = title.split()
+    best = None
+    for i in range(1, len(words)):
+        l1, l2 = " ".join(words[:i]), " ".join(words[i:])
+        w = max(d.textlength(l1, font=font), d.textlength(l2, font=font))
+        if best is None or w < best[0]:
+            best = (w, [l1, l2])
+    return best
+
+
+def draw_card_title(d, title):
+    """Название значка над чипом (полоса y 20…130): одна строка, если влезает
+    крупно, иначе две; обрезаем только то, что не влезло и в две."""
+    if not title:
+        return
+    maxw = W - 80
+    lines, size = None, 56
+    while size >= 40:
+        if d.textlength(title, font=_font(size)) <= maxw:
+            lines = [title]
+            break
+        size -= 2
+    if lines is None:
+        for size in range(40, 25, -2):
+            best = _split2(d, title, _font(size), maxw)
+            if best and best[0] <= maxw:
+                lines = best[1]
+                break
+    if lines is None:                                  # совсем длинное — режем
+        size = 26
+        font = _font(size)
+        t = title
+        while t and d.textlength(t + "…", font=font) > maxw:
+            t = t[:-1]
+        lines = [t.rstrip() + "…"]
+    font = _font(size)
+    line_h = int(size * 1.2)
+    y = 75 - len(lines) * line_h // 2
+    for ln in lines:
+        w = d.textlength(ln, font=font)
+        d.text(((W - w) / 2 + 2, y + 3), ln, font=font, fill=(0, 0, 0))   # тень
+        d.text(((W - w) / 2, y), ln, font=font, fill=(245, 247, 250))
+        y += line_h
+
+
+COST_PILL = {"free": ("БЕСПЛАТНО", (46, 160, 90)), "paid": ("ПЛАТНО", (214, 120, 40))}
+
+
+def draw_cost_pill(d, cost, cy):
+    if cost not in COST_PILL:
+        return
+    text, color = COST_PILL[cost]
+    font = _font(26)
+    tw = d.textlength(text, font=font)
+    pw, ph = tw + 56, 48
+    x0, y0 = (W - pw) / 2, cy - ph / 2
+    d.rounded_rectangle([x0, y0, x0 + pw, y0 + ph], radius=ph / 2, fill=color)
+    d.text(((W - tw) / 2, y0 + 8), text, font=font, fill=(255, 255, 255))
+
+
+def draw_title_text(d, title, chip_x, chip_y, chip_s, chip_color):
+    """Название кампании по центру чипа, с переносом по словам."""
+    dark_chip = sum(chip_color[:3]) / 3 < 128
+    color = (236, 239, 245) if dark_chip else (24, 30, 46)
+    pad = 34
+    size = 54
+    while size >= 24:
+        try:
+            font = ImageFont.truetype(str(FONT_FILE), size)
+        except OSError:                      # шрифта нет — берём встроенный
+            font = ImageFont.load_default(size=size)
+        words, lines, cur = title.split(), [], ""
+        for wd in words:
+            probe = f"{cur} {wd}".strip()
+            if d.textlength(probe, font=font) <= chip_s - 2 * pad or not cur:
+                cur = probe
+            else:
+                lines.append(cur)
+                cur = wd
+        if cur:
+            lines.append(cur)
+        line_h = int(size * 1.25)
+        if len(lines) * line_h <= chip_s - 2 * pad:
+            break
+        size -= 6
+    y = chip_y + (chip_s - len(lines) * line_h) // 2
+    for ln in lines:
+        w = d.textlength(ln, font=font)
+        d.text((chip_x + (chip_s - w) / 2, y), ln, font=font, fill=color)
+        y += line_h
+
+
+def media_shown(r):
+    """Кому нужны картинка и карточка: актуальные не-технические (как в старом коде)."""
+    return r["status"] in ("active", "upcoming") and r.get("group") != "__permanent__"
+
+
+def card_key(r):
+    return r.get("card_key") or image_cache_key(r.get("image") or "")
+
+
+def sha256_file(path: Path):
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def atomic_write(path: Path, data: bytes):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def sync_cards(records, images_dir: Path, cards_dir: Path) -> dict:
+    """Карточки актуальных значков: пишем только изменённые, лишние удаляем.
+    Возвращает {card_key: sha256}."""
+    cards_dir = Path(cards_dir)
+    wanted, written = {}, 0
+    for r in records:
+        if not media_shown(r):
+            continue
+        key = card_key(r)
+        if not key:
+            continue
+        data = render_card(r, images_dir)
+        sha = hashlib.sha256(data).hexdigest()
+        path = cards_dir / f"{key}.png"
+        if sha256_file(path) != sha:
+            atomic_write(path, data)
+            written += 1
+        wanted[key] = sha
+    shown = [r for r in records if media_shown(r) and r.get("image")]
+    if shown and not wanted:
+        raise RuntimeError(f"ни у одного из {len(shown)} показываемых значков не распознан UUID "
+                           "картинки — Twitch сменил схему URL CDN. Карточки не трогаю.")
+    removed = 0
+    for f in cards_dir.glob("*.png"):
+        if f.stem not in wanted:
+            f.unlink()
+            removed += 1
+    return {"cards": wanted, "written": written, "removed": removed}

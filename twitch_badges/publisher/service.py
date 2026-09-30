@@ -40,7 +40,7 @@ class TickResult:
 
 
 async def tick(conn, outbox: Outbox, *, now, has_art, cfg: planner.PlanConfig,
-               publish: bool = True, overrides: dict | None = None) -> TickResult:
+               publish: bool = True, overrides: dict | None = None, media=None) -> TickResult:
     snap = store.current_snapshot(conn)
     if snap is None:
         outbox.alert(planner.AlertSignal("collector-failing", True, "в БД нет ни одного снапшота",
@@ -81,5 +81,7 @@ async def tick(conn, outbox: Outbox, *, now, has_art, cfg: planner.PlanConfig,
             rid = outbox.enqueue(intent, built.category_urls)
             if rid:
                 enqueued.append(rid)
+    if publish and media is not None:
+        await media.ensure(outbox.media_keys())
     stats = await outbox.process() if publish else {}
     return TickResult(res, enqueued, stats)

@@ -36,6 +36,7 @@ from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, Tele
 
 from .. import db, store
 from ..domain.catalog import image_cache_key
+from ..media import MediaNotReady
 from .captions import CAPTION_LIMIT, album_caption, channel_buttons, fit_album_caption, \
     fit_channel_caption, tg_len
 from .planner import ENDING, AlertSignal, Intent
@@ -211,6 +212,17 @@ class Outbox:
             "OR (status IN ('retry','unknown') AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) "
             "ORDER BY id", (now,))]
 
+    def media_keys(self) -> list[str]:
+        """Карточки, нужные неотправленным постам."""
+        keys = []
+        for (payload,) in self.conn.execute("SELECT payload FROM outbox WHERE status IN "
+                                            "('pending','retry','unknown','sending')"):
+            p = json.loads(payload)
+            for i, part in enumerate(p["parts"]):
+                if str(i) not in p["done"]:
+                    keys += part["media"]
+        return keys
+
     def open_rows(self):
         return self.conn.execute("SELECT count(*) FROM outbox WHERE status IN "
                                  "('pending','sending','retry','unknown')").fetchone()[0]
@@ -260,6 +272,12 @@ class Outbox:
             row.attempts += 1
             try:
                 ids = await self._send_part(part)
+            except MediaNotReady as e:
+                # Карточка ещё не загружена в служебный канал — запрос не уходил.
+                self._last_kind = NOT_SENT
+                self._set(rid, status="retry", last_error=f"media: {e}",
+                          next_attempt_at=db.ts(self.clock() + timedelta(seconds=60)))
+                return "retry"
             except TelegramError as e:
                 return self._on_error(row, idx, e)
             self._part_done(row, idx, ids)
