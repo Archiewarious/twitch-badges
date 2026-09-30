@@ -145,21 +145,28 @@ NEW_ID = "__test_new_badge"
 # Даты ОТНОСИТЕЛЬНЫЕ. С фиксированным далёким годом тест проваливался на ровном
 # месте: бот прячет анонсы дальше UPCOMING_HORIZON_DAYS (45 дней), и «2099»
 # честно не показывался.
-_NOW = datetime.now(timezone.utc)
-_START = (_NOW + timedelta(days=5)).strftime("%Y-%m-%d")
-_END = (_NOW + timedelta(days=25)).strftime("%Y-%m-%d")
-_ADDED = _NOW.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
 AVAILABILITY = {
     "hidden": False, "time_limited": True,
-    "start_at_date": _START, "start_at_time": "17:00",
-    "end_at_date": _END, "end_at_time": "17:00",
+    "start_at_time": "17:00", "end_at_time": "17:00",
     "watch": True, "watch_minutes": 20,
     "steps": [[{"type": "watch", "watch_minutes": 20, "watch_days": 3}]],
     "costs": ["free"],
     "categories": [{"id": "490655", "name": "Pokémon GO"}],
     "channels": [],
 }
+
+
+def set_now(now):
+    """Точка отсчёта для относительных дат. pytest ставит время фикстуры."""
+    global _NOW, _START, _END, _ADDED
+    _NOW = now
+    _START = (now + timedelta(days=5)).strftime("%Y-%m-%d")
+    _END = (now + timedelta(days=25)).strftime("%Y-%m-%d")
+    _ADDED = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    AVAILABILITY.update(start_at_date=_START, end_at_date=_END)
+
+
+set_now(datetime.now(timezone.utc))
 
 
 def _badge(with_availability=False):

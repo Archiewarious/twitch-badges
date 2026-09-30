@@ -842,16 +842,18 @@ CREATE TABLE alerts(key TEXT PRIMARY KEY, active INTEGER NOT NULL, subject TEXT,
 
 Экспорт для отката — обратное отображение в прежний формат `published.json`.
 
-## Приложение C. Инструменты (`tools/legacy_sim/`, пока не закоммичены)
+## Приложение C. Инструменты (`tools/legacy_sim/`)
 
-- `sim_publish.py <outdir> [ticks]` — прогон `publish_new` на копии `data/` с фейковым ботом
-  и заглушками алертов. Сейчас даёт «нечего постить».
-- `sim_time.py <outdir> <шаг_часов> <дней>` — прокрутка времени (подмена `datetime.now`)
-  с пересчётом записей и mtime снапшота.
-- `sim_cond.py <outdir> <set_id>` — сценарий A5.
+- `harness.py` — модуль: `LegacySim` гоняет настоящий `publish_new` на отдельном каталоге
+  с подменёнными часами, фейковым Telegram и заглушками алертов. Им пользуются тесты
+  (`tests/test_legacy_baseline.py`) и скрипты ниже.
+- `sim_publish.py <outdir> [ticks] [--data DIR]` — холостой прогон на копии `data/`.
+- `sim_time.py <outdir> <шаг_часов> <дней> [--data DIR]` — прокрутка времени.
+- `sim_cond.py <outdir> <set_id> [--data DIR]` — сценарий A5.
+- `tools/make_fixtures.py <data_dir> <tag>` — снять фикстуры `tests/fixtures/*_<tag>.*`.
 
-Все пишут только в `<outdir>`. Боевой токен и сеть не используются, `alert.sh` не
-вызывается. Путь к worktree в них зашит (`/home/alex/twitch-badges-next`).
+Все пишут только в `<outdir>`, исходный каталог данных только читают. Боевой токен и
+сеть не используются, `alert.sh` не вызывается. Путь к репозиторию берётся от файла.
 
 ## Приложение D. Команды проверки (только чтение)
 
