@@ -109,9 +109,12 @@ if "$SYSTEMCTL" is-enabled --quiet tb-bot.service 2>/dev/null; then
     sleep 1
   done
   if [ "$ok" != 1 ] || ! as_user "$REL/venv/bin/python" -m twitch_badges doctor >/dev/null; then
-    log "smoke не прошёл — откатываюсь"
-    if [ -n "$PREV" ]; then "$HERE/rollback.sh" "$PREV"; fi
-    die "релиз ${SHA:0:12} не поднялся; откат выполнен"
+    if [ -n "$PREV" ]; then
+      log "smoke не прошёл — откатываюсь на $PREV"
+      TB_BASE="$TB_BASE" SYSTEMCTL="$SYSTEMCTL" "$HERE/rollback.sh" "$PREV"
+      die "релиз ${SHA:0:12} не поднялся; откат на $PREV выполнен"
+    fi
+    die "релиз ${SHA:0:12} не поднялся, а откатываться некуда (первая установка): journalctl -u tb-bot"
   fi
   log "бот поднялся на ${SHA:0:12}"
 fi

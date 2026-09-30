@@ -218,9 +218,12 @@ def test_watchdog_sh(tmp_path):
 
 
 def test_shellcheck():
-    sc = Path(REPO / "venv" / "bin" / "shellcheck")
-    if not sc.exists():
+    import shutil
+    import sys
+    sc = shutil.which("shellcheck") or str(Path(sys.prefix) / "bin" / "shellcheck")
+    if not Path(sc).exists():
         pytest.skip("shellcheck не установлен")
-    r = subprocess.run([str(sc), *(str(p) for p in (REPO / "monitor").glob("*.sh"))],
+    scripts = [*(REPO / "monitor").glob("*.sh"), *(REPO / "deploy").glob("*.sh")]
+    r = subprocess.run([sc, *map(str, scripts)],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stdout
