@@ -173,7 +173,7 @@ def integrity(conn, quick: bool = False) -> list[str]:
         if n:
             out.append(f"{n} алиасов указывают на алиас (цепочка)")
         bad = [r[0] for r in conn.execute("SELECT DISTINCT stage FROM stages")
-               if r[0] not in STAGES_FIXED and not r[0].startswith("extended:")]
+               if r[0] not in STAGES_FIXED and not r[0].startswith(("extended:", "ending:"))]
         if bad:
             out.append(f"неизвестные стадии: {bad[:5]}")
         n = conn.execute("SELECT count(*) FROM outbox WHERE status='sent' AND message_ids IS NULL").fetchone()[0]

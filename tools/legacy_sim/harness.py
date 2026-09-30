@@ -77,6 +77,8 @@ class Post:
     media: list[str]
     caption: str
     buttons: bool = False
+    post_kind: str | None = None      # вид поста логики бота: started, ending, …
+    keys: list = field(default_factory=list)   # set_id значков в посте
 
     @property
     def lines(self) -> list[str]:
@@ -164,6 +166,26 @@ class LegacySim:
             self.alerts.append(Alert(_Clock.value, key, note, cleared=True))
 
         bot.send_alert, bot.clear_alert = fake_alert, fake_clear
+        _orig = getattr(bot, "_legacy_orig", None) or (bot.post_badge, bot.post_album)
+        bot._legacy_orig = _orig
+        sim = self
+
+        async def post_badge(context, r, kind, now=None):
+            n = len(sim.posts)
+            ok = await _orig[0](context, r, kind, now)
+            for p in sim.posts[n:]:
+                p.post_kind, p.keys = kind, [r["set_id"]]
+            return ok
+
+        async def post_album(context, items, kind, group=None):
+            n = len(sim.posts)
+            by_url = {bot.card_url(r): k for k, r in items}
+            done = await _orig[1](context, items, kind, group)
+            for p in sim.posts[n:]:
+                p.post_kind, p.keys = kind, [by_url.get(u) for u in p.media]
+            return done
+
+        bot.post_badge, bot.post_album = post_badge, post_album
         self._ctx = _Ctx()
         self._ctx.bot = _FakeBot(self)
 
