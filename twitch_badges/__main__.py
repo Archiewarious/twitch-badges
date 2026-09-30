@@ -3,6 +3,7 @@
     migrate --from DIR       перенести состояние старой установки в новую БД
     export-state --to FILE   БД → published.json старого формата (откат)
     doctor                   целостность БД и инварианты
+    collect [--force]        один прогон сбора (его запускает tb-collector.timer)
 """
 from __future__ import annotations
 
@@ -60,6 +61,59 @@ def cmd_doctor(args, cfg):
     return 0
 
 
+def make_sources(cfg, http, conn):
+    """Настоящие источники: SD, Helix (если есть ключи), GQL, CDN картинок."""
+    from .sources import gql
+    from .sources.helix import Helix, credentials_ok
+    from .sources.streamdb import StreamDB
+    from .collector import Sources
+
+    helix = None
+    if credentials_ok(cfg.twitch_client_id, cfg.twitch_client_secret):
+        def token_set(v):
+            with db.tx(conn):
+                if v is None:
+                    conn.execute("DELETE FROM kv WHERE ns='helix_token'")
+                else:
+                    db.kv_set(conn, "helix_token", "app", v)
+        helix = Helix(http, cfg.twitch_client_id, cfg.twitch_client_secret,
+                      lambda: db.kv_get(conn, "helix_token", "app"), token_set, db.utcnow)
+
+    def fetch_image(url):
+        r = http.get(url, ok_404=True)
+        return r.status_code, r.headers.get("content-type"), r.content
+
+    return Sources(sd=StreamDB(http, cfg.sd_base_url), helix=helix,
+                   categories_lookup=gql.Categories(http).lookup, fetch_image=fetch_image)
+
+
+def cmd_collect(args, cfg):
+    import logging
+    from .collector import run_once
+    from .lock import AlreadyRunning, InstanceLock
+    from .sources.http import Http
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    try:
+        lock = InstanceLock(cfg.data_dir / "collector.lock").acquire()
+    except AlreadyRunning:
+        print("предыдущий сбор ещё идёт — пропускаю")
+        return 0
+    try:
+        conn = db.open_db(_db_path(args, cfg))
+        http = Http(deadline=args.deadline)
+        try:
+            res = run_once(conn, make_sources(cfg, http, conn), now=db.utcnow(),
+                           images_dir=cfg.images_dir, cards_dir=cfg.cards_dir,
+                           overrides_path=cfg.overrides_file, force=args.force)
+        finally:
+            http.close()
+        print(json.dumps({"action": res.action, "reason": res.reason}, ensure_ascii=False))
+        return 1 if res.action == "failed" else 0
+    finally:
+        lock.release()
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m twitch_badges")
     ap.add_argument("--env-file", help="env-файл KEY=VALUE (по умолчанию TB_ENV_FILE)")
@@ -73,10 +127,15 @@ def main(argv=None) -> int:
     p.add_argument("--db")
     p = sub.add_parser("doctor")
     p.add_argument("--db")
+    p = sub.add_parser("collect")
+    p.add_argument("--db")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--deadline", type=float, default=480)
     args = ap.parse_args(argv)
     cfg = config.load(env_file=Path(args.env_file) if args.env_file else None)
     try:
-        return {"migrate": cmd_migrate, "export-state": cmd_export, "doctor": cmd_doctor}[args.cmd](args, cfg)
+        return {"migrate": cmd_migrate, "export-state": cmd_export, "doctor": cmd_doctor,
+                "collect": cmd_collect}[args.cmd](args, cfg)
     except db.DbError as e:
         print(f"ошибка: {e}", file=sys.stderr)
         return 2

@@ -47,7 +47,9 @@ async def tick(conn, outbox: Outbox, *, now, has_art, cfg: planner.PlanConfig,
                                          "Сбор ещё ни разу не отработал успешно."))
         return TickResult(None, [], {})
     known = db.kv_all(conn, "known_windows")
-    built = build(snap.data, RecordsContext(now=now, known_windows=known, overrides=overrides or {}))
+    if overrides is None:
+        overrides = db.kv_get(conn, "overrides", "data", {}) or {}     # проверенные сбором
+    built = build(snap.data, RecordsContext(now=now, known_windows=known, overrides=overrides))
     campaigns = store.load_campaigns(conn)
     cfg = planner.PlanConfig(**{**cfg.__dict__, "paused": cfg.paused or paused(conn)})
     busy = {r[0] for r in conn.execute(

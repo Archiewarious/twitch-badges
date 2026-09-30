@@ -48,6 +48,7 @@ class Config:
     telegram_api_base: str = ""
     sd_base_url: str = "https://www.streamdatabase.com"
     faults: frozenset = frozenset()
+    overrides_file: Path = Path(__file__).resolve().parent.parent / "manual" / "overrides.json"
 
     @property
     def db_path(self) -> Path:
@@ -92,4 +93,5 @@ def load(env: dict | None = None, env_file: Path | None = None) -> Config:
         telegram_api_base=g("TELEGRAM_API_BASE", ""),
         sd_base_url=(g("SD_BASE_URL") or "https://www.streamdatabase.com").rstrip("/"),
         faults=frozenset(x for x in (g("TB_FAULTS") or "").split(",") if x),
+        **({"overrides_file": Path(g("OVERRIDES_FILE"))} if g("OVERRIDES_FILE") else {}),
     )
