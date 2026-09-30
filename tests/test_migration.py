@@ -190,3 +190,14 @@ def test_cli(tmp_path):
     assert cli(["export-state", "--to", str(out), "--db", str(path)]) == 0
     assert len(json.loads(out.read_text())) == 49
     assert cli(["doctor", "--db", str(tmp_path / "none.sqlite3")]) == 1
+
+
+def test_cli_plan_status_backup(tmp_path, capsys):
+    d = make_data_dir(tmp_path)
+    path = tmp_path / "cli.sqlite3"
+    assert cli(["migrate", "--from", str(d), "--db", str(path)]) == 0
+    capsys.readouterr()
+    assert cli(["plan", "--dry-run", "--db", str(path)]) == 0
+    assert "постов на этом тике" in capsys.readouterr().out
+    assert cli(["status", "--db", str(path)]) == 0
+    assert "Outbox: пусто" in capsys.readouterr().out

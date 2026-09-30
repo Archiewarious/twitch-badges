@@ -4,6 +4,10 @@
     export-state --to FILE   БД → published.json старого формата (откат)
     doctor                   целостность БД и инварианты
     collect [--force]        один прогон сбора (его запускает tb-collector.timer)
+    bot                      процесс бота (tb-bot.service)
+    plan --dry-run           что бот опубликовал бы сейчас (ничего не отправляет)
+    status                   состояние: данные, очередь, тревоги
+    backup                   копия БД в DATA_DIR/backups
 """
 from __future__ import annotations
 
@@ -116,6 +120,61 @@ def cmd_collect(args, cfg):
         lock.release()
 
 
+def cmd_bot(args, cfg):
+    from .bot import main as bot_main
+    return bot_main(cfg)
+
+
+def cmd_plan(args, cfg):
+    from . import store
+    from .domain.records import RecordsContext, build
+    from .publisher import planner
+    from .publisher.service import art_checker
+
+    conn = db.open_db(_db_path(args, cfg))
+    snap = store.current_snapshot(conn)
+    if snap is None:
+        print("снапшотов нет")
+        return 1
+    now = db.utcnow()
+    built = build(snap.data, RecordsContext(
+        now=now, known_windows=db.kv_all(conn, "known_windows"),
+        overrides=db.kv_get(conn, "overrides", "data", {}) or {}))
+    busy = {r[0] for r in conn.execute(
+        "SELECT DISTINCT s.campaign_id FROM stages s JOIN outbox o ON o.id=s.outbox_id "
+        "WHERE o.status != 'sent'")}
+    res = planner.plan(built.records, store.load_campaigns(conn), store.aliases(conn), now=now,
+                       data_at=snap.committed, has_art=art_checker(cfg.images_dir),
+                       cfg=planner.PlanConfig(quiet_start=cfg.quiet_start, quiet_end=cfg.quiet_end),
+                       busy=busy)
+    print(f"данные: {snap.committed_at}; постов на этом тике: {len(res.intents)}")
+    for it in res.intents:
+        print(f"  {it.kind}: {', '.join(it.campaign_ids)}" + (f" ({it.group})" if it.group else ""))
+    for a in res.aliases:
+        print(f"  алиас {a.alias} → {a.campaign_id}: {a.reason}")
+    held = [h for h in res.held if h[2] != "нет арта"]
+    for cid, kind, why in held:
+        print(f"  придержан {cid} {kind or ''}: {why}")
+    for sig in res.alerts:
+        if sig.active:
+            print(f"  тревога {sig.key}: {sig.subject}")
+    return 0
+
+
+def cmd_status(args, cfg):
+    from .owner import status_text
+    conn = db.open_db(_db_path(args, cfg))
+    print(status_text(conn, db.utcnow()))
+    return 0
+
+
+def cmd_backup(args, cfg):
+    from .backup import backup
+    conn = db.open_db(_db_path(args, cfg))
+    print(backup(conn, cfg.data_dir / "backups", db.utcnow()))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m twitch_badges")
     ap.add_argument("--env-file", help="env-файл KEY=VALUE (по умолчанию TB_ENV_FILE)")
@@ -129,6 +188,12 @@ def main(argv=None) -> int:
     p.add_argument("--db")
     p = sub.add_parser("doctor")
     p.add_argument("--db")
+    sub.add_parser("bot")
+    for name in ("plan", "status", "backup"):
+        p = sub.add_parser(name)
+        p.add_argument("--db")
+        if name == "plan":
+            p.add_argument("--dry-run", action="store_true", required=True)
     p = sub.add_parser("collect")
     p.add_argument("--db")
     p.add_argument("--force", action="store_true")
@@ -137,7 +202,8 @@ def main(argv=None) -> int:
     cfg = config.load(env_file=Path(args.env_file) if args.env_file else None)
     try:
         return {"migrate": cmd_migrate, "export-state": cmd_export, "doctor": cmd_doctor,
-                "collect": cmd_collect}[args.cmd](args, cfg)
+                "collect": cmd_collect, "bot": cmd_bot, "plan": cmd_plan, "status": cmd_status,
+                "backup": cmd_backup}[args.cmd](args, cfg)
     except db.DbError as e:
         print(f"ошибка: {e}", file=sys.stderr)
         return 2

@@ -59,6 +59,7 @@ class FakeTelegram:
                       storage_id: Chat(storage_id, title="storage"),
                       owner_id: Chat(owner_id, type="private", title="owner")}
         self.faults: list[tuple[str, str]] = []
+        self.inline_answers: list[dict] = []
         self.calls: list[tuple[str, dict]] = []
         self.now = time.time
 
@@ -115,7 +116,8 @@ class FakeTelegram:
                     "has_protected_content": chat.protected, "accent_color_id": 0,
                     "max_reaction_count": 11, "accepted_gift_types": {
                         "unlimited_gifts": False, "limited_gifts": False,
-                        "unique_gifts": False, "premium_subscription": False}}
+                        "unique_gifts": False, "premium_subscription": False,
+                        "gifts_from_channels": False}}
         if method == "sendMessage":
             chat = self._chat(p["chat_id"])
             return self._new_message(chat, text=plain(p.get("text")))
@@ -154,6 +156,9 @@ class FakeTelegram:
                                      "chat": {"id": src.id, "type": "channel", "title": src.title},
                                      "message_id": orig["message_id"]}
             return self._new_message(dst, **fwd)
+        if method == "answerInlineQuery":
+            self.inline_answers.append(p)
+            return True
         if method == "deleteMessage":
             chat = self._chat(p["chat_id"])
             if chat.messages.pop(int(p["message_id"]), None) is None:
