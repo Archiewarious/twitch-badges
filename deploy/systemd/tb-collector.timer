@@ -1,0 +1,11 @@
+[Unit]
+Description=@InfoTwitchBot: сбор данных раз в 2 минуты
+
+[Timer]
+OnBootSec=1min
+# Отсчёт от конца прошлого прогона: долгий сбор не наслаивается на следующий
+OnUnitInactiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

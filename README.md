@@ -1,199 +1,186 @@
-# Twitch Badges Tracker
+# Twitch Badges Tracker (@InfoTwitchBot)
 
 Следит за глобальными значками Twitch и рассказывает о них в Telegram: **что
-можно получить, как именно и до какого числа**. Значки появляются и исчезают
-постоянно, а собранного места, где это написано по-человечески, нет — проект
-закрывает эту дыру.
-
-Три поверхности:
+можно получить, как именно и до какого числа**.
 
 | | |
 |---|---|
-| **Канал** [@TwitchInfoRadar](https://t.me/TwitchInfoRadar) | автопостинг жизненного цикла значка |
-| **Бот** [@InfoTwitchBot](https://t.me/InfoTwitchBot) | inline-поиск по значкам в любом чате |
-| **Сайт** | одностраничный каталог: актуальное + архив |
+| **Канал** [@TwitchInfoRadar](https://t.me/TwitchInfoRadar) | посты о жизненном цикле значка: появился → уточнили время → стало известно, как получить → стартовало → последний день (→ продлили) |
+| **Бот** [@InfoTwitchBot](https://t.me/InfoTwitchBot) | inline-поиск в любом чате: `@InfoTwitchBot`, `free`, `paid`, `soon` или название |
 
 Неофициальный проект, с Twitch Interactive не связан.
 
 ---
 
-## Как это устроено
-
-Задача выглядит простой — «взять данные и запостить», — но почти вся сложность
-в том, что **надёжного источника не существует**. Отсюда три источника с разным
-приоритетом и много проверок.
-
-### Источники данных
-
-**1. [StreamDatabase](https://www.streamdatabase.com)** — основной. Единственный,
-где есть даты и структурированные условия. Минус: его ведут люди, и у свежих
-кампаний там пусто по несколько часов — страница значка честно пишет
-*«We don't yet know if this badge is earned by subscribing or watching»*.
-
-**2. Twitch Helix** (`fetch_badges.py`) — второй, ~360 описаний. Отдаёт описание
-и картинку сразу, как Twitch завёл значок, не дожидаясь модератора SD. Из
-описания разбираются условие, категория и канал. Включается сам при наличии
-ключей; без них проект работает на одном SD.
-
-**3. `manual/overrides.json`** — ручной, перекрывает всё. Для случаев, когда
-условия опубликованы картинкой-схемой и машинам недоступны. Устаревает молча,
-поэтому правило: удалять запись, как только источник отдал данные.
-
-### Как из данных получается пост
-
-**Условие** берётся из структурного `steps`: внешний список — этапы («затем»),
-внутренний — альтернативы («или»). Отсюда «подписка или гифт, затем смотреть
-20 минут в 3 разных дня» — плоские поля такого не передают.
-
-**Место** — категория Twitch. Адрес и каноническое имя спрашиваем у самого
-Twitch (GQL `game(name|id)`, при промахе — поиск): из названия слаг не
-выводится («Rainbow Six Siege» живёт на `/tom-clancys-rainbow-six-siege`), а
-Twitch отвечает 200 на любой адрес, так что догадку иначе не проверить. В посте
-показываем имя так, как его пишет Twitch («TFT» → «Teamfight Tactics»). Если
-категорий много (у покемонов их 20), одну ссылку не ставим — она бы вводила в
-заблуждение.
-
-**Пост** — разделами «Как получить» / «Когда»; карточка 640×640 несёт название
-значка и плашку «бесплатно/платно», чтобы объяснять себя и без подписи.
-
-**Картинка** обязательна: пост без арта значка не уходит вовсе.
-
-Жизненный цикл поста:
+## Как устроено
 
 ```
-появился → уточнили время → стало известно, как получить
-         → стартовало → последний день
+tb-collector.timer (2 мин) → python -m twitch_badges collect
+    опрос StreamDatabase → полный сбор при изменении / раз в 30 мин
+    SD + Twitch Helix + Twitch GQL → проверка формата → записи → картинки → карточки
+    → ОДНА транзакция в SQLite: снапшот + память окон + кэш категорий
+tb-bot.service (Type=notify, WatchdogSec) → python -m twitch_badges bot
+    inline (карточки по file_id) · личка: команды владельца
+    публикация раз в 2 мин: записи с текущим временем → планировщик → outbox → канал
+    карточки → служебный канал · мониторы · алерты · бэкап БД раз в сутки
+tb-watchdog.timer (15 мин) → monitor/watchdog.sh (bash + curl)
+    бот и сбор живы? диск? Telegram и SD отвечают? → алерты; пинг dead-man
 ```
 
-Средние два — догоняющие: SD часто заводит значок раньше, чем узнаёт его
-условия, и пост «условия уточняются» иначе остался бы последним словом.
+**Источники.** StreamDatabase (даты, условия; ведут люди, у свежих кампаний бывает
+пусто), Twitch Helix (описание и арт сразу, как Twitch завёл значок), Twitch GQL
+(настоящие ссылки на категории), `manual/overrides.json` (ручные данные, перекрывают
+всё; проверяются по схеме).
 
-### Поток
+**Почему нет дублей.** Каждый пост закрывает «стадии» кампании (`announce`,
+`started`, `ending`, `dates`, `cond`, `extended:<дата>`), и пара (кампания, стадия)
+уникальна в БД. Пост сначала записывается в outbox вместе со стадиями, потом
+уходит в Telegram. Если ответ Telegram потерян, бот пересылает свежие сообщения
+канала в служебный канал и проверяет, дошёл ли пост, — и только потом решает,
+отправлять ли снова.
 
-Конкурирующие каналы публикуют новый значок минут за 15. Чтобы успевать, дешёвое
-обнаружение отделено от дорогого сбора.
+**Что знает читатель.** По каждой кампании хранится окно, условие и цена ровно в
+том виде, в каком они ушли в последний пост. Новые посты — только когда данные
+отличаются от того, что читатель уже знает.
+
+Код:
 
 ```
-poll.timer (2 мин)                    ← ОБНАРУЖЕНИЕ: 3 запроса, ~0.7 c
-  └─ poll_changes.py
-       сигнатура каталога и событий против последнего снапшота
-       + точечная проверка страниц значков без условия
-       изменилось → запускает refresh немедленно
-
-refresh.timer (30 мин)                ← подстраховка, если опрос молчал
-  └─ refresh.sh                       ← СБОР, тяжёлый
-       fetch_streamdb.py → staging-снапшот (+ Helix, если есть ключи)
-       generate_site.py  → site/index.html + картинки
-       render_cards.py   → карточки 640×640
-       деплой на сайт (rsync)
-       commit-marker: staging → latest.json   ← бот читает только это
-
-bot/bot.py (systemd, долгоживущий)
-  ├─ inline-выдача по локальному снапшоту
-  └─ publish_new (2 мин): диff против published.json → посты в канал
-
-format.timer (1 час)                  ← check_format.py + test_pipeline.py
-bot-reload.path                       ← правка исходников = авто-рестарт бота
-overrides.path                        ← правка ручных данных = полный refresh
+twitch_badges/
+  domain/        окна, классификация, записи — чистые функции (build_records)
+  publisher/     captions (тексты), planner (что постить), outbox (отправка), inline
+  sources/       StreamDatabase, Helix, GQL, HTTP-клиент, проверки формата
+  collector.py   сбор   ·  bot.py  процесс бота  ·  db.py/store.py  SQLite
+  alerts.py      каталог алертов  ·  monitors.py  ·  media.py  карточки в Telegram
+deploy/          systemd/tb-*, deploy.sh, rollback.sh, env.example
+monitor/         watchdog.sh, alert.sh (bash + curl)
+tests/           pytest; tools/legacy_sim — харнесс старой логики для сравнения
 ```
-
-**Задержка от появления значка до поста: ~5 минут.**
 
 ---
 
-## Структура
+## Установка с нуля
 
-```
-fetch_streamdb.py      сбор со StreamDatabase; guard'ы против пустого ответа
-fetch_badges.py        Twitch Helix — второй источник (описания, картинки)
-generate_site.py       классификация значков, построение окон, рендер сайта
-render_cards.py        карточки 640×640 (фон в цвет значка, Pillow)
-poll_changes.py        сторож изменений: дёшево заметить и запустить сбор
-refresh.sh             полный цикл сбора с атомарным commit-marker
-check_format.py        проверки формата источника и здоровья результата
-test_pipeline.py       сквозные тесты на копиях реального снапшота
-
-bot/bot.py             Telegram-бот: inline, автопостинг, алерты владельцу
-bot/backfill.py        разовый бэкфилл канала перед первым запуском
-
-monitor/alert.sh       алертер на bash+curl: дедуп, антиспам, recovery
-monitor/watchdog.sh    «данные свежие / бот жив / диск в порядке»
-monitor/ignore.txt     значки, о которых не напоминать
-
-manual/overrides.json  ручные данные с наивысшим приоритетом
-assets/                шрифт Manrope (OFL-1.1) для карточек без арта
-systemd/               юниты и таймеры — вся автоматика воспроизводима
-```
-
-Рантайм (`data/`, `site/`, `venv/`, `.env`) в репозиторий не попадает.
-
----
-
-## Надёжность
-
-Источник менялся четырежды за трое суток, и каждый раз что-то ломалось молча —
-`.get()` возвращает `None`, данные тихо беднеют, канал замолкает. Отсюда:
-
-- **Guard'ы в сборе.** Пустой или обвалившийся ответ → снапшот не пишется, под
-  `set -e` цикл прерывается ДО commit-marker: старые данные целы.
-- **Проверки формата раз в час** — 14 сценариев: девять поломок источника
-  и четыре способа завести кампанию. Ловят поломку сразу, а не по симптомам.
-- **Память окон.** Даты, которые источник когда-то отдал и потом потерял,
-  подставляются обратно — так было 31.08, когда SD переписал описания и пять
-  значков разом замолчали.
-- **Staleness-gate**: бот не постит по данным старше 6 часов.
-- **Алертинг на bash+curl**, независимый от Python: работает, даже когда бот
-  мёртв. Будит только по тому, на что владелец может повлиять; пробелы источника
-  сообщаются, лишь если значок уже выдаётся и молчит дольше суток.
-- **Тревоги уровневые, а не пособытийные.** У сбора и опроса намеренно нет
-  `OnFailure`: источник регулярно лежит или выкатывается, и сообщения «упал» /
-  «восстановился» шли по кругу, топя настоящие поломки. Сигнал один — «данные не
-  обновляются дольше 3 часов», и он покрывает любую причину, включая
-  непредвиденные. Watchdog при этом проверяет, отвечает ли источник, и прямо
-  пишет: ждать или чинить. `OnFailure` оставлен только у проверки формата — она
-  работает на локальном снапшоте, и её падение всегда означает нашу поломку.
-
----
-
-## Установка
+Нужны: Linux с systemd, Python 3.14, git, curl.
 
 ```bash
-git clone <repo> && cd twitch-badges
-python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
-python3 -m venv bot/venv && ./bot/venv/bin/pip install -r bot/requirements.txt
+# 1. Системный пользователь без sudo и docker
+sudo useradd --system --home-dir /var/lib/twitch-badges --shell /usr/sbin/nologin twitchbadges
 
-cp .env.example .env          # заполнить, см. таблицу ниже
-sudo cp -r systemd/* /etc/systemd/system/ && sudo systemctl daemon-reload
-sudo systemctl enable --now \
-  twitch-badges-bot.service twitch-badges-refresh.timer \
-  twitch-badges-poll.timer twitch-badges-watchdog.timer \
-  twitch-badges-format.timer \
-  twitch-badges-bot-reload.path twitch-badges-overrides.path
+# 2. Секреты
+sudo install -d -m 0750 -o root -g twitchbadges /etc/twitch-badges
+sudo install -m 0640 -o root -g twitchbadges deploy/env.example /etc/twitch-badges/env
+sudoedit /etc/twitch-badges/env          # заполнить токены, PUBLISH_ENABLED=false
+
+# 3. Код и юниты (тесты, venv, симлинк /opt/twitch-badges/current)
+sudo deploy/deploy.sh HEAD
+
+# 4. БД: перенос состояния старой установки (или пустая база для новой)
+sudo -u twitchbadges env DATA_DIR=/var/lib/twitch-badges \
+    /opt/twitch-badges/current/venv/bin/python -m twitch_badges migrate --from /путь/к/старой/data
+sudo -u twitchbadges env DATA_DIR=/var/lib/twitch-badges \
+    /opt/twitch-badges/current/venv/bin/python -m twitch_badges doctor
+
+# 5. Запуск
+sudo systemctl enable --now tb-collector.timer tb-watchdog.timer tb-bot.service
 ```
 
-Юниты рассчитаны на путь `/home/archie/projects/twitch-badges` — при другом
-расположении поправьте пути в `systemd/*`.
+Служебный канал: создать приватный канал, добавить туда бота администратором —
+бот сам запомнит канал и напишет владельцу. Или задать `TELEGRAM_STORAGE_CHAT_ID`.
 
-### .env
+После проверки (`plan --dry-run`, inline, `status`) — `PUBLISH_ENABLED=true` и
+`sudo systemctl restart tb-bot`.
 
-| Ключ | Назначение |
-|---|---|
-| `TELEGRAM_BOT_TOKEN` | токен бота от BotFather |
-| `TELEGRAM_CHANNEL_ID` | числовой id канала (`-100…`); пусто = автопубликация выключена |
-| `PUBLISH_ENABLED` | `true` — постить в канал; `false` — донастройка без постинга |
-| `ALERT_CHAT_ID` | приватный чат владельца для алертов (НЕ публичный канал) |
-| `SITE_URL` | публичный адрес сайта: оттуда Telegram забирает карточки |
-| `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` | ключи с [dev.twitch.tv](https://dev.twitch.tv/console/apps); включают Helix вторым источником |
-| `QUIET_HOURS_START` / `QUIET_HOURS_END` | тихие часы МСК для несрочных постов; равные значения = выключено |
+---
 
-### Лицензия
+## Эксплуатация
 
-Код — MIT (`LICENSE`). Шрифт в `assets/` — под SIL Open Font License 1.1,
-подробности в `assets/README.md`.
-
-### Проверка
+Команды (от имени сервиса):
 
 ```bash
-./venv/bin/python check_format.py --snapshot   # формат источника цел?
-./bot/venv/bin/python test_pipeline.py         # 14 сквозных сценариев
+tb() { sudo -u twitchbadges env DATA_DIR=/var/lib/twitch-badges \
+         /opt/twitch-badges/current/venv/bin/python -m twitch_badges "$@"; }
+tb status            # данные, очередь постов, тревоги
+tb plan --dry-run    # что ушло бы в канал прямо сейчас
+tb collect --force   # внеочередной сбор
+tb doctor            # целостность БД
+tb backup            # копия БД в /var/lib/twitch-badges/backups
+tb export-state --to /tmp/published.json   # состояние в формате старого бота
 ```
+
+В личке бота (только из чата `ALERT_CHAT_ID`): `/status`, `/pause`, `/resume`,
+`/sent <id>`, `/resend <id>`.
+
+Журналы: `journalctl -u tb-bot -u tb-collector -u tb-watchdog -n 100`.
+
+### Выкатка и откат
+
+```bash
+sudo deploy/deploy.sh <ref>     # тесты → бэкап → проверка БД → переключение → рестарт → smoke
+sudo deploy/rollback.sh         # на предыдущий релиз
+```
+
+Выкатка сама откатывается, если бот не поднялся за 2 минуты. Правка файлов в
+`/opt` деплоем не является: код меняется только через `deploy.sh`.
+
+`manual/overrides.json` едет вместе с кодом (через `deploy.sh`); сбор подхватывает
+его на следующем прогоне (≤ 2 мин), плохие записи пропускает с алертом.
+Формат: `{ "<set_id>": {"group", "condition", "cost": "free|paid",
+"start"/"end": "YYYY-MM-DD[THH:MM]" (UTC) или null, "link": {"label", "url"}} }`.
+
+### Восстановление из бэкапа
+
+```bash
+sudo systemctl stop tb-bot.service tb-collector.timer
+ls /var/lib/twitch-badges/backups/                    # или документ в служебном канале
+sudo -u twitchbadges cp /var/lib/twitch-badges/backups/twitch_badges-YYYYMMDD-HHMM.sqlite3 \
+                        /var/lib/twitch-badges/twitch_badges.sqlite3
+sudo -u twitchbadges rm -f /var/lib/twitch-badges/twitch_badges.sqlite3-wal \
+                           /var/lib/twitch-badges/twitch_badges.sqlite3-shm
+tb doctor && sudo systemctl start tb-collector.timer tb-bot.service
+```
+
+Посты, ушедшие после бэкапа, бот не помнит: перед стартом проверь `tb plan --dry-run`
+и при необходимости включи `/pause`.
+
+---
+
+## Алерты: что делать
+
+Каждый алерт сам говорит, что случилось, как это влияет на канал, чья это сторона
+и что делать. Кратко:
+
+| Ключ | Что значит | Что делать |
+|---|---|---|
+| `collector-failing` | нет успешного сбора > 3 ч | SD лежит — ждать (данные догонят сами); иначе `journalctl -u tb-collector` |
+| `format-drift` | StreamDatabase сменил формат | правка кода сбора; в тексте — какие поля |
+| `posting-paused-stale` | данным > 6 ч: анонсы стоят, «стартовало»/«последний день» идут до 48 ч | см. `collector-failing` |
+| `post-failed` | Telegram отклонил пост (400) — ошибка бота | исправить, выкатить; пост уйдёт повторно один раз |
+| `channel-forbidden` | у бота нет прав в канале (403) | вернуть права администратора — посты догонят |
+| `post-unknown` | не удалось понять, ушёл ли пост | посмотреть канал; `/sent <id>` или `/resend <id>` |
+| `telegram-unreachable` | > 15 мин нет связи с Telegram | обычно ждать |
+| `burst` | > 5 групп в очереди | если это мусор — `/pause` |
+| `anomalies`, `blindspots` | пробел данных источника | обычно ничего; `manual/overrides.json` или ignore |
+| `helix-auth` | Twitch не принимает ключи | проверить приложение на dev.twitch.tv |
+| `overrides-invalid` | ошибка в `manual/overrides.json` | исправить запись |
+| `db-integrity` | БД повреждена, постинг остановлен | «Восстановление из бэкапа» |
+| `bot-down`, `bot-wedged`, `bot-restarting` | (watchdog.sh) бот лежит / цикл завис / рестарты | `journalctl -u tb-bot`; при «Telegram недоступен» — ждать |
+| `collector-stale`, `disk-full` | (watchdog.sh) | по тексту алерта |
+| dead-man (healthchecks.io) | сервер или watchdog не отвечают 30 мин | зайти на сервер |
+
+---
+
+## Разработка
+
+```bash
+python3.14 -m venv venv && venv/bin/pip install -r requirements.lock -r requirements-dev.txt
+venv/bin/python -m pytest -q                 # всё (~6 мин)
+venv/bin/python -m pytest -q -m "not slow"   # быстро (~1 мин)
+```
+
+Тесты не ходят в сеть и не используют боевой токен: Telegram — `tests/fake_telegram.py`
+(подмена сетевого слоя PTB с инъекцией сбоев), StreamDatabase и Twitch —
+`tests/fake_sd.py`. Дифференциальные тесты сравнивают новую логику со старой
+(`tools/legacy_sim`) на снапшоте 30.09.2026 и его мутациях.
+
+План и история решений — `docs/REFACTOR_PLAN.md`.

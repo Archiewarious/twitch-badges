@@ -1,0 +1,10 @@
+[Unit]
+Description=@InfoTwitchBot: watchdog раз в 15 минут
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=15min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

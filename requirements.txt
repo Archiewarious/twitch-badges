@@ -1,3 +1,4 @@
-requests>=2.31
-python-dotenv>=1.0
-Pillow>=10
+# Зависимости рантайма (точные версии — requirements.lock, его ставит deploy.sh)
+python-telegram-bot[job-queue]==22.8
+httpx==0.28.1
+pillow==12.3.0

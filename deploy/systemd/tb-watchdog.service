@@ -1,0 +1,37 @@
+[Unit]
+Description=@InfoTwitchBot: независимый watchdog (bash + curl) и пинг dead-man
+Documentation=file:///opt/twitch-badges/current/README.md
+
+[Service]
+Type=oneshot
+User=twitchbadges
+Group=twitchbadges
+Environment=TB_ENV_FILE=/etc/twitch-badges/env DATA_DIR=/var/lib/twitch-badges
+ExecStart=/opt/twitch-badges/current/monitor/watchdog.sh
+TimeoutStartSec=180
+StateDirectory=twitch-badges
+StateDirectoryMode=0750
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+UMask=0027
