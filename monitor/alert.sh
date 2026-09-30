@@ -1,86 +1,84 @@
 #!/bin/bash
-# Независимый Telegram-алертер. НИКАКОГО Python/venv — только bash+curl,
-# чтобы работать даже когда сам бот мёртв. Дедуп: одна тревога на инцидент,
-# ре-напоминание раз в RENOTIFY, и авто-уведомление о восстановлении (--clear).
+# Независимый алертер владельцу: только bash + curl, чтобы работать, даже когда
+# бот и Python мертвы. Дедуп: одна тревога на инцидент, напоминание раз в
+# ALERT_RENOTIFY, «восстановлено» при --clear.
 #
-# Использование:
-#   alert.sh <key> <subject> <body...>     # поднять/держать тревогу (идемпотентно)
-#   alert.sh --clear <key> [<body...>]     # снять тревогу, если была активна
+#   alert.sh <key> <subject> [<body>]   поднять/держать тревогу (идемпотентно)
+#   alert.sh --clear <key> [<body>]     снять тревогу, если была
 #
-# Читает ALERT_BOT_TOKEN + ALERT_CHAT_ID из .env (fallback: TELEGRAM_BOT_TOKEN).
-# ALERT_CHAT_ID ДОЛЖЕН быть приватным чатом/каналом владельца, НЕ публичным каналом.
-
+# Настройки — из env-файла TB_ENV_FILE (формат KEY=VALUE, файл НЕ исполняется):
+#   ALERT_BOT_TOKEN (иначе TELEGRAM_BOT_TOKEN), ALERT_CHAT_ID, DATA_DIR.
+# Токен передаётся curl через stdin (-K -), в командной строке его не видно.
+# ALERT_DRY_RUN=1 — ничего не отправлять, печатать текст (для тестов).
 set -uo pipefail
 
-PROJ="/home/alex/twitch-badges"
-STATE_DIR="$PROJ/data/alerts"
-RENOTIFY="${ALERT_RENOTIFY:-21600}"   # повторять активную тревогу не чаще, чем раз в 6ч
-LOCK="$STATE_DIR/.lock"
-
-mkdir -p "$STATE_DIR"
-
-# --- секреты ---
-set -a
-# shellcheck disable=SC1091
-[ -f "$PROJ/.env" ] && . "$PROJ/.env"
-set +a
-TOKEN="${ALERT_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
-CHAT="${ALERT_CHAT_ID:-}"
-
-send() {
-  # $1 = текст. Молча ничего не делаем, если не настроено (лучше, чем краш).
-  [ -n "$TOKEN" ] && [ -n "$CHAT" ] || { echo "alert.sh: ALERT_BOT_TOKEN/ALERT_CHAT_ID не заданы" >&2; return 1; }
-  local host; host="$(hostname)"
-  curl -4 -fsS -m 20 --retry 3 --retry-delay 3 \
-    "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-    --data-urlencode "chat_id=${CHAT}" \
-    --data-urlencode "text=[${host}] $1" \
-    -d disable_web_page_preview=true >/dev/null
+env_get() {  # env_get KEY — значение из окружения, иначе из TB_ENV_FILE
+  local key="$1" val="${!1:-}"
+  if [ -z "$val" ] && [ -n "${TB_ENV_FILE:-}" ] && [ -r "$TB_ENV_FILE" ]; then
+    val=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" "$TB_ENV_FILE" | tail -1 \
+          | sed -E "s/^[[:space:]]*(export[[:space:]]+)?${key}=//; s/^[\"'](.*)[\"']$/\\1/")
+  fi
+  printf '%s' "$val"
 }
 
-exec 9>"$LOCK"; flock 9   # сериализуем watchdog + OnFailure, чтобы не было гонок по state
+DATA_DIR="$(env_get DATA_DIR)"
+STATE_DIR="${ALERT_STATE_DIR:-${DATA_DIR:-/tmp}/alerts-watchdog}"
+RENOTIFY="${ALERT_RENOTIFY:-21600}"
+API="${TELEGRAM_API_BASE:-$(env_get TELEGRAM_API_BASE)}"
+API="${API:-https://api.telegram.org/bot}"
+mkdir -p "$STATE_DIR"
 
-MODE="raise"
-if [ "${1:-}" = "--clear" ]; then MODE="clear"; shift; fi
+send() {
+  local text host
+  host="$(hostname)"
+  text="[$host] $1"
+  if [ "${ALERT_DRY_RUN:-0}" = "1" ]; then
+    printf 'DRY-RUN alert: %s\n' "$text"
+    return 0
+  fi
+  local token chat
+  token="$(env_get ALERT_BOT_TOKEN)"
+  [ -n "$token" ] || token="$(env_get TELEGRAM_BOT_TOKEN)"
+  chat="$(env_get ALERT_CHAT_ID)"
+  if [ -z "$token" ] || [ -z "$chat" ]; then
+    echo "alert.sh: нет ALERT_BOT_TOKEN/TELEGRAM_BOT_TOKEN или ALERT_CHAT_ID" >&2
+    return 1
+  fi
+  printf 'url = "%s%s/sendMessage"\n' "$API" "$token" \
+    | curl -4 -fsS -m 20 --retry 3 --retry-delay 3 -K - \
+        --data-urlencode "chat_id=${chat}" --data-urlencode "text=${text}" \
+        -d disable_web_page_preview=true >/dev/null
+}
+
+exec 9>"$STATE_DIR/.lock"
+flock 9
+
+MODE=raise
+if [ "${1:-}" = "--clear" ]; then MODE=clear; shift; fi
 KEY="${1:?key required}"; shift || true
+case "$KEY" in *[!A-Za-z0-9._-]*) echo "alert.sh: плохой ключ $KEY" >&2; exit 2 ;; esac
 STATE="$STATE_DIR/$KEY"
-
 now=$(date +%s)
 
-if [ "$MODE" = "clear" ]; then
-  # Сначала ОТПРАВИТЬ, потом стирать. Если сделать наоборот, одна сетевая заминка
-  # в момент восстановления убивает «RECOVERED» навсегда: состояния уже нет,
-  # повторить нечем, нового ALERT не будет — владелец остаётся с висящей тревогой
-  # при работающей системе. Не отправилось — состояние живо, повторим на следующем
-  # тике watchdog (15 мин). На raise-пути ниже порядок такой же.
-  if [ -f "$STATE" ]; then
-    if send "✅ RECOVERED: $KEY ${*:-}"; then
-      rm -f "$STATE"
-    fi
+if [ "$MODE" = clear ]; then
+  # Сначала отправить, потом стереть: иначе сетевая заминка съест «восстановлено».
+  if [ -f "$STATE" ] && send "✅ Восстановлено: $KEY ${*:-}"; then
+    rm -f "$STATE"
   fi
   exit 0
 fi
 
 SUBJECT="${1:?subject required}"; shift || true
 BODY="${*:-}"
-
 if [ -f "$STATE" ]; then
-  # Битый/пустой state (обрыв записи, полный диск) не должен превращаться в шторм:
-  # без этого арифметика ниже падает, и «STILL FAILING» уходит каждые 15 минут.
   last=$(cat "$STATE" 2>/dev/null)
-  case "$last" in
-    ''|*[!0-9]*) last=$(stat -c %Y "$STATE" 2>/dev/null || echo "$now") ;;
-  esac
-  age=$(( now - last ))
-  if [ "$age" -lt "$RENOTIFY" ]; then
-    exit 0                      # уже alerted недавно — молчим (антиспам)
-  fi
-  PREFIX="🔴 STILL FAILING"
+  case "$last" in ''|*[!0-9]*) last=$(stat -c %Y "$STATE" 2>/dev/null || echo "$now") ;; esac
+  [ $(( now - last )) -lt "$RENOTIFY" ] && exit 0
+  PREFIX="🔁 Всё ещё"
 else
-  PREFIX="🚨 ALERT"
+  PREFIX="🔴"
 fi
-
 if send "$PREFIX: $SUBJECT
 $BODY"; then
-  echo "$now" > "$STATE"        # отметку ставим только при успешной отправке
+  echo "$now" > "$STATE"
 fi

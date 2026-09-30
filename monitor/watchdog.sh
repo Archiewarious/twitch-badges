@@ -1,109 +1,104 @@
 #!/bin/bash
-# Level-based watchdog: раз в ~15 мин проверяет «данные свежие + бот жив + диск ок»
-# и поднимает/снимает тревоги через alert.sh (с дедупом и recovery).
-# Ставится на systemd timer. ОСНОВНОЙ источник тревог: у сбора и опроса
-# OnFailure нет намеренно — единичный неудачный прогон не событие для владельца.
+# Независимый dead-man (tb-watchdog.timer, раз в 15 мин): жив ли бот и сбор,
+# хватает ли диска, отвечают ли Telegram и StreamDatabase. Тревоги — через
+# alert.sh (bash + curl). В конце — пинг внешнего сервиса (DEADMAN_URL,
+# healthchecks.io): если умрёт весь сервер, владелец узнает оттуда.
+#
+# Пути и имена — из окружения/TB_ENV_FILE, ничего не зашито:
+#   DATA_DIR, TB_BOT_UNIT (tb-bot.service), TB_COLLECTOR_UNIT (tb-collector.service),
+#   DEADMAN_URL. ALERT_DRY_RUN=1 — ничего не отправлять.
 set -uo pipefail
-PROJ="/home/alex/twitch-badges"
-ALERT="$PROJ/monitor/alert.sh"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ALERT="${ALERT_SH:-$HERE/alert.sh}"
 
+env_get() {
+  local key="$1" val="${!1:-}"
+  if [ -z "$val" ] && [ -n "${TB_ENV_FILE:-}" ] && [ -r "$TB_ENV_FILE" ]; then
+    val=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" "$TB_ENV_FILE" | tail -1 \
+          | sed -E "s/^[[:space:]]*(export[[:space:]]+)?${key}=//; s/^[\"'](.*)[\"']$/\\1/")
+  fi
+  printf '%s' "$val"
+}
+
+DATA_DIR="$(env_get DATA_DIR)"
+: "${DATA_DIR:?DATA_DIR не задан}"
+BOT_UNIT="${TB_BOT_UNIT:-tb-bot.service}"
+COLL_UNIT="${TB_COLLECTOR_UNIT:-tb-collector.service}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 now=$(date +%s)
 
-# (1) Свежесть данных: latest.json обновляется каждым успешным refresh (~30 мин).
-#     >3ч без обновления = минимум 6 пропущенных циклов => refresh тихо сломан.
-LATEST="$PROJ/data/streamdb_latest.json"
-STALE_MAX=${STALE_MAX:-10800}   # 3 часа
-if [ -f "$LATEST" ]; then
-  mtime=$(stat -c %Y "$LATEST")
-  age=$(( now - mtime ))
-  if [ "$age" -gt "$STALE_MAX" ]; then
-    # Сразу говорим, чья это беда. Отдельных тревог на каждый упавший прогон
-    # больше нет (сбор и опрос лишены OnFailure): источник лежит регулярно, и
-    # пособытийные «упал/восстановился» шли по кругу, ничего не сообщая. Здесь
-    # сигнал уровневый — данные не обновляются дольше порога, — и к нему сразу
-    # приложен ответ на главный вопрос: ждать или чинить.
-    if curl -4 -s -o /dev/null -m 12 "https://www.streamdatabase.com/"; then
-      WHO="источник отвечает — значит, дело на нашей стороне, смотри журнал сбора"
-    else
-      WHO="ИСТОЧНИК НЕ ОТВЕЧАЕТ (streamdatabase.com) — почти наверняка это он, а не бот; данные догонят сами, когда он поднимется"
-    fi
-    # Последняя ошибка сбора прямо в тревоге: 27.09.2026 SD сменил формат поля,
-    # и «смотри журнал» стоило владельцу дня догадок, хотя причина — одна строка.
-    ERR=$(journalctl -u twitch-badges-refresh.service --since "-3 hours" --no-pager -o cat 2>/dev/null \
-          | grep -E "^[A-Za-z_.]*(Error|Exception)\b|RuntimeError" | tail -1 | cut -c1-200)
-    "$ALERT" data-stale "данные протухли" \
-      "streamdb_latest.json не обновлялся $(( age/60 )) мин (порог $(( STALE_MAX/60 )) мин).
-$WHO
-Последняя ошибка сбора: ${ERR:-не найдена}
-Смотреть: journalctl -u twitch-badges-refresh.service -n 50"
-  else
-    "$ALERT" --clear data-stale "данным $(( age/60 )) мин"
-  fi
-else
-  "$ALERT" data-stale "нет данных" "$LATEST отсутствует"
-fi
+age_of() { [ -f "$1" ] && echo $(( now - $(stat -c %Y "$1") )) || echo 999999; }
+reach() { curl -4 -s -o /dev/null -m 12 "$1"; }
 
-# (2) Бот жив? (ловит failed/StartLimit crash-loop и просто inactive)
-# Перезапуск — штатное событие: twitch-badges-bot-reload.path поднимает бот заново
-# при каждой правке исходников, а Restart=always делает это после сбоя. Оба states
-# занимают ~1-2 секунды, и одиночная проверка успевала поймать их как «бот НЕ
-# работает» (deactivating/stop-sigterm) — владельцу уходил ложный алерт о лежащем
-# сервисе, который на самом деле уже поднимался. Даём процессу дожить рестарт:
-# алертим, только если он не active НИ РАЗУ за несколько проб подряд.
+TG_OK=1; reach "https://api.telegram.org/" || TG_OK=0
+SD_OK=1; reach "https://www.streamdatabase.com/" || SD_OK=0
+
+# (1) Бот: юнит активен и цикл жив (heartbeat пишет сам цикл раз в минуту).
 bot_active() {
   for _ in 1 2 3 4 5 6; do
-    systemctl is-active --quiet twitch-badges-bot.service && return 0
-    sleep 5
+    "$SYSTEMCTL" is-active --quiet "$BOT_UNIT" && return 0
+    sleep "${WATCHDOG_PROBE_SLEEP:-5}"
   done
   return 1
 }
-
 if bot_active; then
-  "$ALERT" --clear bot-down "бот снова активен"
-else
-  st=$(systemctl show twitch-badges-bot.service -p ActiveState -p SubState --value | tr '\n' '/')
-  "$ALERT" bot-down "бот НЕ работает ($st)" \
-    "twitch-badges-bot.service не active.
-Смотреть:  journalctl -u twitch-badges-bot.service -n 50
-Поднять:   sudo systemctl reset-failed twitch-badges-bot.service && sudo systemctl start twitch-badges-bot.service
-(sudo обязателен: юнит системный, root-owned — без него будет 'Interactive authentication required')"
-fi
-
-# (4) Бот РАЗГОВАРИВАЕТ с Telegram? is_active выше этого не показывает: зависший
-#     event loop оставляет юнит active, а данные обновляет отдельный refresh —
-#     все индикаторы зелёные при лежащем продукте. bot_alive трогается только
-#     после успешного ответа API (каждые 5 мин), порог 25 мин = запас в 5 пропусков.
-ALIVE="$PROJ/data/bot_alive"
-ALIVE_MAX=${ALIVE_MAX:-1500}
-if systemctl is-active --quiet twitch-badges-bot.service && [ -f "$ALIVE" ]; then
-  aage=$(( now - $(stat -c %Y "$ALIVE") ))
-  if [ "$aage" -gt "$ALIVE_MAX" ]; then
-    "$ALERT" bot-wedged "бот запущен, но молчит $(( aage/60 )) мин" \
-      "Юнит active, но последний успешный ответ Telegram API был $(( aage/60 )) мин назад (порог $(( ALIVE_MAX/60 )) мин).
-Похоже, бот повис, а не упал — systemd такое не перезапустит.
-Смотреть:   journalctl -u twitch-badges-bot.service -n 50
-Вылечить:   sudo systemctl restart twitch-badges-bot.service"
+  "$ALERT" --clear bot-down "бот снова работает"
+  hb=$(age_of "$DATA_DIR/heartbeat-bot")
+  if [ "$hb" -gt "${BOT_HB_MAX:-600}" ]; then
+    "$ALERT" bot-wedged "бот запущен, но его цикл молчит $(( hb / 60 )) мин" \
+      "systemd должен был перезапустить его сам (WatchdogSec). Если тревога повторяется —
+Смотреть: journalctl -u $BOT_UNIT -n 50"
   else
-    "$ALERT" --clear bot-wedged "бот отвечает ($(( aage/60 )) мин назад)"
+    "$ALERT" --clear bot-wedged "цикл бота жив"
   fi
+else
+  st=$("$SYSTEMCTL" show "$BOT_UNIT" -p ActiveState -p SubState -p NRestarts --value 2>/dev/null | tr '\n' ' ')
+  "$ALERT" bot-down "бот не работает ($st)" \
+    "Смотреть: journalctl -u $BOT_UNIT -n 50
+Поднять:  sudo systemctl reset-failed $BOT_UNIT && sudo systemctl start $BOT_UNIT"
 fi
 
-# (3) Диск
-PCT=$(df --output=pcent / | tr -dc '0-9')
-if [ "${PCT:-0}" -ge "${DISK_MAX:-90}" ]; then
-  # Без sudo du не читает /var/lib/docker и /var/log/journal — то есть подсказка
-  # уводила бы от главных пожирателей места именно на этом хосте.
-  "$ALERT" disk-full "диск / заполнен ${PCT}%" \
-    "порог ${DISK_MAX:-90}%.
-Найти:      sudo du -xh --max-depth=1 / | sort -h | tail -15
-            docker system df ; journalctl --disk-usage
-Освободить (безопасно):
-            docker builder prune -f        # кэш сборки, обычно самый жирный
-            docker image prune -f          # только висячие слои
-            sudo journalctl --vacuum-size=200M ; sudo apt-get clean
+# (2) Бот часто перезапускается (цикл рестартов). Причину называем честно:
+#     если Telegram недоступен — это он, а не «бот повис» (D5).
+restarts=$("$SYSTEMCTL" show "$BOT_UNIT" -p NRestarts --value 2>/dev/null || echo 0)
+prev=$(cat "$DATA_DIR/.watchdog-restarts" 2>/dev/null || echo "$restarts")
+echo "${restarts:-0}" > "$DATA_DIR/.watchdog-restarts"
+if [ "${restarts:-0}" -gt $(( ${prev:-0} + ${RESTART_MAX:-3} )) ]; then
+  if [ "$TG_OK" = 0 ]; then WHY="Telegram с сервера недоступен — перезапуски, скорее всего, из-за него"
+  else WHY="Telegram доступен — значит, дело в боте"; fi
+  "$ALERT" bot-restarting "бот перезапускался $(( restarts - prev )) раз за 15 мин" \
+    "$WHY
+Смотреть: journalctl -u $BOT_UNIT -n 100"
+else
+  "$ALERT" --clear bot-restarting "перезапуски прекратились"
+fi
 
-НЕ запускать 'docker system prune -a': снесёт локально собранные образы —
-их нет ни в одном реестре, восстановить можно только пересборкой."
+# (3) Сбор: последний прогон без исключения (heartbeat) не старше 3 ч.
+ch=$(age_of "$DATA_DIR/heartbeat-collector")
+if [ "$ch" -gt "${COLLECTOR_HB_MAX:-10800}" ]; then
+  if [ "$SD_OK" = 1 ]; then WHO="StreamDatabase отвечает — значит, дело на нашей стороне"
+  else WHO="StreamDatabase не отвечает — почти наверняка это источник; данные догонят сами"; fi
+  "$ALERT" collector-stale "сбор данных не отрабатывает $(( ch / 60 )) мин" \
+    "$WHO
+Смотреть: journalctl -u $COLL_UNIT -n 50"
+else
+  "$ALERT" --clear collector-stale "сбор снова отрабатывает"
+fi
+
+# (4) Диск
+PCT=$(df --output=pcent "$DATA_DIR" | tr -dc '0-9')
+if [ "${PCT:-0}" -ge "${DISK_MAX:-90}" ]; then
+  "$ALERT" disk-full "диск заполнен на ${PCT}%" \
+    "Найти: sudo du -xh --max-depth=1 / | sort -h | tail -15 ; docker system df ; journalctl --disk-usage
+Безопасно освободить: docker builder prune -f ; docker image prune -f ; sudo journalctl --vacuum-size=200M
+НЕ запускать docker system prune -a: снесёт локально собранные образы."
 else
   "$ALERT" --clear disk-full "диск ${PCT}%"
 fi
+
+# (5) Внешний dead-man: пинг, пока этот скрипт вообще отрабатывает.
+DEADMAN="$(env_get DEADMAN_URL)"
+if [ -n "$DEADMAN" ] && [ "${ALERT_DRY_RUN:-0}" != "1" ]; then
+  curl -4 -fsS -m 10 --retry 2 "$DEADMAN" >/dev/null || echo "deadman ping не прошёл" >&2
+fi
+exit 0

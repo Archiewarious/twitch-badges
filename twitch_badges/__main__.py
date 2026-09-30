@@ -109,6 +109,8 @@ def cmd_collect(args, cfg):
         finally:
             http.close()
         print(json.dumps({"action": res.action, "reason": res.reason}, ensure_ascii=False))
+        if res.action != "failed":
+            (cfg.data_dir / "heartbeat-collector").touch()     # для watchdog.sh
         return 1 if res.action == "failed" else 0
     finally:
         lock.release()
