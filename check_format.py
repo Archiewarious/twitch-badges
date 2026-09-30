@@ -41,6 +41,12 @@ MIN_EVENTS = 5
 MIN_SHOWN = 3
 MIN_WITH_CONDITION = 0.7      # доля показываемых, у которых есть условие
 MAX_NO_LINK = 0.1             # доля показываемых с категорией, но без ссылки на неё
+# Формат каталога с ~27.09.2026 (30.09: 523 значка, added_at у 297, даты у 189).
+MIN_ADDED_SHARE = 0.3         # доля значков, у которых известна дата появления
+MIN_CATALOG_DATED = 50        # значков с датами прямо в каталоге
+CATALOG_KEYS = ("added", "added_at", "cost", "cancelled")   # читаем у каждого значка
+MIN_KEY_SHARE = 0.9
+CATALOG_COSTS = {None, "free", "paid"}
 
 
 class Problems(list):
@@ -68,6 +74,45 @@ def check_catalog(problems, badges):
     problems.check(collector.image_cache_key(ver.get("image_url_4x") or "") is not None,
                    "каталог: URL картинки не разбирается IMG_UUID_RE — Twitch сменил "
                    "схему CDN, посыплются картинки и карточки")
+    check_catalog_fields(problems, badges)
+
+
+def _sd_datetime_ok(date_s, time_s):
+    """Пустое — норма (дат нет); заполненное обязано разбираться."""
+    if not date_s and not time_s:
+        return True
+    return bool(date_s) and site.parse_dt(date_s, time_s) is not None
+
+
+def check_catalog_fields(problems, badges):
+    """Поля каталога, которые мы читаем с ~27.09.2026: дата появления, окно, цена,
+    отмена. Раньше SD сменил history → added_at, и это молча отключило монитор
+    слепых зон и половину фолбэков, а проверки были зелёными."""
+    n = len(badges)
+    for key in CATALOG_KEYS:
+        have = sum(1 for b in badges if key in b)
+        problems.check(have >= MIN_KEY_SHARE * n,
+                       f"каталог: поле {key} есть лишь у {have} из {n} значков — "
+                       "формат каталога сменился")
+    added = sum(1 for b in badges if collector._badge_added_at(b))
+    problems.check(added >= MIN_ADDED_SHARE * n,
+                   f"каталог: дата появления (added_at/history) есть лишь у {added} из {n} — "
+                   "перестанут работать слепые зоны, фолбэк «без дат» и сканирование страниц")
+    dated = [b for b in badges if b.get("start_at_date") or b.get("end_at_date")]
+    problems.check(len(dated) >= MIN_CATALOG_DATED,
+                   f"каталог: даты прямо на значке у {len(dated)} (ожидали ≥{MIN_CATALOG_DATED}) — "
+                   "SD снова перенёс окна, значки только из каталога пропадут")
+    bad = [f"{(b.get('current') or {}).get('set_id')}: "
+           f"{b.get('start_at_date')} {b.get('start_at_time')!r} → "
+           f"{b.get('end_at_date')} {b.get('end_at_time')!r}"
+           for b in dated
+           if not (_sd_datetime_ok(b.get("start_at_date"), b.get("start_at_time"))
+                   and _sd_datetime_ok(b.get("end_at_date"), b.get("end_at_time")))]
+    problems.check(not bad, f"каталог: даты не разбираются у {len(bad)} значков "
+                            f"(например, {'; '.join(bad[:3])}) — сменился формат даты/времени")
+    costs = {b.get("cost") for b in badges} - CATALOG_COSTS
+    problems.check(not costs, f"каталог: незнакомые значения cost {sorted(map(str, costs))} — "
+                              "цена в постах станет «не указана»")
 
 
 def check_events(problems, events):
@@ -78,6 +123,19 @@ def check_events(problems, events):
             if key not in ev:
                 problems.append(f"события: у «{ev.get('title', '?')}» нет ключа {key}")
                 break
+    # Время событий и их availability — HH:MM. Незнакомый вид parse_dt превратит
+    # в «даты нет», и окна тихо пропадут.
+    bad = []
+    for ev in events:
+        rows = [ev] + [av for b in ev.get("twitch_global_badges") or []
+                       for av in b.get("availability") or []]
+        for row in rows:
+            for f in ("start", "end"):
+                d, t = row.get(f"{f}_at_date"), row.get(f"{f}_at_time")
+                if not _sd_datetime_ok(d, t):
+                    bad.append(f"«{ev.get('title', '?')}» {f}: {d} {t!r}")
+    problems.check(not bad, f"события: даты не разбираются ({len(bad)}; например, "
+                            f"{'; '.join(bad[:3])}) — сменился формат даты/времени")
 
 
 def check_availability(problems, events, page_avail):
@@ -132,7 +190,9 @@ def check_steps(problems, events, page_avail):
 def check_records(problems, snapshot):
     """Здоровье результата: доходят ли данные до того, что увидит читатель."""
     try:
-        records = site.build_records(snapshot)
+        # Без памяти окон: иначе потерянные источником даты known_windows
+        # подставляет ещё 14 дней, и проверка их пропажи не видит.
+        records = site.build_records(snapshot, known_windows={})
     except Exception as e:
         problems.append(f"build_records упал: {e}")
         return

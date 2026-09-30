@@ -1297,6 +1297,8 @@ def hidden_reason(r):
         return "добавлен уже после окончания"
     if r["status"] == "upcoming" and w.get("start"):
         return "анонс за горизонтом"
+    if r.get("note_kind") == "cancelled":
+        return "кампания отменена"
     if r["status"] == "ended" and w.get("end"):
         return "окно закрылось"
     return None                          # причины нет → не знаем, что с ним делать

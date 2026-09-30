@@ -95,6 +95,32 @@ def test_format_drift(base):
                 av.pop("steps", None)
                 return
 
+    def drop_added_at(s):
+        for b in s["badges"]:
+            b.pop("added_at", None)
+            b.pop("history", None)
+
+    def catalog_time_format(s):
+        for b in s["badges"]:
+            for f in ("start_at_time", "end_at_time"):
+                if b.get(f):
+                    b[f] = b[f][:5].replace(":", ".")
+
+    def drop_catalog_dates(s):
+        for b in s["badges"]:
+            for f in ("start_at_date", "start_at_time", "end_at_date", "end_at_time"):
+                b.pop(f, None)
+
+    def unknown_cost(s):
+        for b in s["badges"]:
+            if b.get("cost") == "paid":
+                b["cost"] = "premium"
+
+    def event_time_format(s):
+        for e in s["events"]:
+            if e.get("start_at_time"):
+                e["start_at_time"] = "6pm"
+
     def break_image_urls(s):
         for b in s["badges"]:
             v = (b.get("current") or {}).get("version") or {}
@@ -112,6 +138,11 @@ def test_format_drift(base):
         ("события опустели", lambda s: s.__setitem__("events", [])),
         ("ссылки на категории перестали находиться",
          lambda s: s.__setitem__("category_urls", {})),
+        ("пропала дата появления значка (added_at)", drop_added_at),
+        ("время в каталоге в незнакомом виде", catalog_time_format),
+        ("даты ушли с каталога", drop_catalog_dates),
+        ("незнакомое значение цены в каталоге", unknown_cost),
+        ("время в событиях в незнакомом виде", event_time_format),
     ]
     for name, mutate in cases:
         snap = copy.deepcopy(base)
@@ -121,6 +152,15 @@ def test_format_drift(base):
     # Косметическое поле поменяло форму — сбор обязан пережить это молча.
     # 27.09.2026 user_count из {"current": N} стал числом, build_records упал, и
     # данные простояли полтора дня.
+    # Время в каталоге бывает и HH:MM, и HH:MM:SS.mmm — оба вида штатные.
+    snap = copy.deepcopy(base)
+    for b in snap["badges"]:
+        for f in ("start_at_time", "end_at_time"):
+            if b.get(f):
+                b[f] = b[f][:5]
+    check("время в каталоге как HH:MM — не поломка", not format_problems(snap),
+          "; ".join(format_problems(snap)))
+
     for name, val in [("user_count — число", 5), ("user_count — строка", "5"),
                       ("user_count — список", [1])]:
         snap = copy.deepcopy(base)
@@ -169,15 +209,21 @@ def set_now(now):
 set_now(datetime.now(timezone.utc))
 
 
-def _badge(with_availability=False):
+def _badge(with_availability=False, catalog_dates=False):
+    """Значок в формате каталога SD с ~27.09.2026: added_at, cost, cancelled и
+    (если SD их знает) даты прямо на значке, время — HH:MM:SS.mmm."""
     b = {
-        "_id": "test", "added": True, "user_count": {"current": 0},
-        "history": [{"type": "added", "timestamp": _ADDED}],
+        "_id": "test", "added": True, "user_count": 0, "removed": False,
+        "added_at": _ADDED, "cost": "free", "system": False, "cancelled": False,
         "current": {"set_id": NEW_ID, "version": {
             "id": "1", "title": "Test Badge",
             "image_url_4x": "https://static-cdn.jtvnw.net/badges/v1/"
                             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/3"}},
     }
+    if catalog_dates:
+        b.update(time_limited=True,
+                 start_at_date=_START, start_at_time="17:00:00.000",
+                 end_at_date=_END, end_at_time="16:59:59.000")
     if with_availability:
         b["availability"] = [dict(AVAILABILITY)]
     return b
@@ -213,6 +259,15 @@ def test_new_campaign(base):
         ev["content"] = "The Test Badge badge will be available for watching."
         s["badges"].append(_badge())
 
+    def catalog_only(s):
+        """Значок только в каталоге: даты на значке, событий нет, условие —
+        из описания Twitch (так SD завёл La Velada и EWC)."""
+        s["badges"].append(_badge(catalog_dates=True))
+        s.setdefault("helix", {})[NEW_ID] = {
+            "title": "Test Badge", "click_url": "", "image_url_4x": "",
+            "description": "This badge was earned by watching a streamer in the "
+                           "Pokémon GO category for 20 minutes"}
+
     def orphan_no_badge(s):
         """Значка нет вовсе — только событие с датами (случай LEGO)."""
         ev = _host_event(s)
@@ -226,6 +281,7 @@ def test_new_campaign(base):
         ("значок привязан к событию, даты в availability", linked, NEW_ID),
         ("даты только на странице значка", page_only, NEW_ID),
         ("значок в каталоге, даты у события, связи нет", event_dates_only, NEW_ID),
+        ("значок только в каталоге, даты на самом значке", catalog_only, NEW_ID),
         ("значка ещё нет — только событие с датами", orphan_no_badge, "test-orphan-campaign"),
     ]:
         snap = copy.deepcopy(base)

@@ -90,6 +90,7 @@ NOTE_KIND_LABEL = {
     "technical": "технический",
     "periodic": "периодически",
     "removed": "удалён из Twitch",
+    "cancelled": "кампания отменена",
     "unknown": "неизвестно",
 }
 
@@ -279,12 +280,22 @@ def describe_condition_ru(av):
     return text[0].upper() + text[1:]
 
 
+SD_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d{1,6})?)?$")
+
+
 def parse_dt(date_s, time_s):
+    """Дата и время SD в UTC. Время бывает HH:MM (события, availability),
+    HH:MM:SS.mmm и HH:MM:SS (каталог с ~27.09.2026), пусто — полночь.
+    Незнакомый вид — None: лучше «даты нет», чем выдуманная."""
     if not date_s:
         return None
-    time_s = time_s or "00:00"
+    m = SD_TIME_RE.match((time_s or "00:00").strip())
+    if not m:
+        return None
     try:
-        return datetime.strptime(f"{date_s} {time_s}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+        d = datetime.strptime(date_s, "%Y-%m-%d")
+        return d.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                         second=int(m.group(3) or 0), tzinfo=timezone.utc)
     except ValueError:
         return None
 
@@ -306,10 +317,29 @@ def group_key(event_title):
 
 
 def badge_first_seen(badge):
-    added = [h for h in badge.get("history", []) if h.get("type") == "added"]
-    if not added:
+    """Когда значок появился: history (до ~27.09.2026) или added_at (теперь)."""
+    added = [h for h in badge.get("history") or [] if h.get("type") == "added"]
+    if added:
+        return min(added, key=lambda h: h["timestamp"])["timestamp"]
+    return badge.get("added_at") or None
+
+
+def badge_added_dt(badge):
+    seen = badge_first_seen(badge)
+    try:
+        return datetime.fromisoformat(seen.replace("Z", "+00:00")) if seen else None
+    except (ValueError, AttributeError):
         return None
-    return min(added, key=lambda h: h["timestamp"])["timestamp"]
+
+
+# Эвристики (поиск имени в тексте событий) — только для свежих значков: у
+# архивных нет окна штатно, и их однословные имена (Alliance, Horde, Diablo…)
+# цеплялись бы к прозе новых событий. Та же глубина, что у сканирования страниц.
+HEURISTIC_MAX_AGE_DAYS = 32
+
+# Цена по типу условия со страницы SD. Bits — платно (раньше выходило
+# «бесплатно»), незнакомый тип — цена неизвестна, а не «бесплатно».
+PAGE_KIND_COST = {"sub": "paid", "purchase": "paid", "bits": "paid", "watch": "free"}
 
 
 def esc(s):
@@ -575,7 +605,8 @@ def _condition_from_content(raw):
     return text[0].upper() + text[1:] if text else None
 
 
-def add_event_content_windows(windows, events, badges, page_info=None, twitch_links=None):
+def add_event_content_windows(windows, events, badges, page_info=None, twitch_links=None,
+                              now=None):
     """ФОЛБЭК A2: событие НАЗЫВАЕТ бейдж в тексте content, но не заполнило
     структурную связь twitch_global_badges.
 
@@ -586,14 +617,19 @@ def add_event_content_windows(windows, events, badges, page_info=None, twitch_li
     объекты. Здесь связываем сами — по имени бейджа в тексте события.
 
     Осторожно с ложными совпадениями: сопоставляем ТОЛЬКО бейджи-сироты (без окна
-    из более надёжных источников выше) и требуем достаточно длинное имя, чтобы
-    короткие общие слова не липли к случайной прозе."""
+    из более надёжных источников выше), только СВЕЖИЕ (HEURISTIC_MAX_AGE_DAYS) и
+    требуем достаточно длинное имя, чтобы короткие общие слова не липли к
+    случайной прозе."""
+    now = now or datetime.now(timezone.utc)
     orphans = []
     for b in badges or []:
         sid = (b.get("current") or {}).get("set_id")
         if not sid or sid in MANUAL_SET_IDS or windows.get(sid):
             continue
         if _page_too_late(page_info, sid):
+            continue
+        added = badge_added_dt(b)
+        if not added or (now - added).days > HEURISTIC_MAX_AGE_DAYS:
             continue
         title = ((b.get("current") or {}).get("version") or {}).get("title") or ""
         orphans.append((sid, title, _norm_alnum(title), _norm_alnum(sid)))
@@ -658,7 +694,8 @@ def event_dates_by_set_id(events):
     return out
 
 
-def enrich_windows(windows, page_info=None, twitch_links=None, event_dates=None):
+def enrich_windows(windows, page_info=None, twitch_links=None, event_dates=None,
+                   catalog=None):
     """Победившее окно дополняем тем, чего в нём нет, из остальных источников.
 
     Цепочка приоритетов выбирает окно целиком: первый источник с датами отдаёт и
@@ -673,16 +710,24 @@ def enrich_windows(windows, page_info=None, twitch_links=None, event_dates=None)
     все фолбэки ниже пропускают значок, если окно для него уже существует.
     Итог — семь значков разом (nasa-roman, оба Pikachu, dron-e, diablo…) висели
     как «нет дат, не знаю, как классифицировать», хотя у их событий даты стояли.
-    Существующие даты не трогаем: availability точнее события."""
+    Существующие даты не трогаем: availability точнее события.
+
+    Первыми идут даты из КАТАЛОГА (с ~27.09.2026 SD кладёт их прямо на значок):
+    это структурные поля с часами, точнее разбора текста и дат события."""
     page_info = page_info or {}
     twitch_links = twitch_links or {}
     event_dates = event_dates or {}
+    catalog = catalog or {}
     for set_id, wins in windows.items():
         info = page_info.get(set_id) or {}
         link = twitch_links.get(set_id)
+        cat = catalog_window_fields(catalog.get(set_id))
         for w in wins:
             if not w.get("start") and not w.get("end"):
-                if info.get("start"):
+                if cat:
+                    # цену не трогаем здесь: у окна она может быть точнее (см. ниже)
+                    w.update({k: v for k, v in cat.items() if k != "cost"})
+                elif info.get("start"):
                     w["start"] = parse_dt(info["start"].split("T")[0],
                                           info["start"].split("T")[1][:5])
                     if info.get("end"):
@@ -711,15 +756,74 @@ def enrich_windows(windows, page_info=None, twitch_links=None, event_dates=None)
                 w["twitch_link"] = link
             # costs у события SD тоже бывает пустым — берём из типа со страницы
             # (тот же вывод, что делает add_page_windows).
+            if not w.get("cost") and cat.get("cost"):
+                w["cost"] = cat["cost"]
             if not w.get("cost") and info.get("kind"):
-                w["cost"] = "paid" if info["kind"] in ("sub", "purchase") else "free"
+                w["cost"] = PAGE_KIND_COST.get(info["kind"])
+    return windows
+
+
+CATALOG_COSTS = {"free", "paid"}
+
+
+def catalog_window_fields(badge):
+    """Окно и цена прямо со значка каталога (формат SD с ~27.09.2026):
+    start_at_date/time, end_at_date/time, cost. {} — дат нет."""
+    if not badge:
+        return {}
+    start = parse_dt(badge.get("start_at_date"), badge.get("start_at_time"))
+    end = parse_dt(badge.get("end_at_date"), badge.get("end_at_time"))
+    if not start and not end:
+        return {}
+    cost = badge.get("cost")
+    return {"start": start, "end": end,
+            "cost": cost if cost in CATALOG_COSTS else None,
+            "dates_coarse": not (badge.get("start_at_time") or badge.get("end_at_time")),
+            "from_catalog": True}
+
+
+def catalog_by_set_id(badges):
+    out = {}
+    for b in badges or []:
+        sid = (b.get("current") or {}).get("set_id")
+        if sid and sid not in out:
+            out[sid] = b
+    return out
+
+
+def add_catalog_fields_windows(windows, badges, page_info=None, twitch_links=None):
+    """Окно из полей САМОГО значка каталога. С ~27.09.2026 SD перенёс даты и цену
+    из badges[].availability прямо на значок, и значок, про который SD знает
+    только из каталога (так были заведены La Velada и EWC), остался бы без окна:
+    фолбэк B ниже читает только availability, которой больше нет.
+
+    Приоритет — сразу после структурной availability (событий и страницы): это
+    те же машинные поля, и они точнее разбора текста страницы и дат события."""
+    for b in badges or []:
+        set_id = (b.get("current") or {}).get("set_id")
+        if not set_id or set_id in MANUAL_SET_IDS or windows.get(set_id):
+            continue
+        if _page_too_late(page_info, set_id):
+            continue
+        fields = catalog_window_fields(b)
+        if not fields:
+            continue
+        windows[set_id] = [{
+            "event_title": "", "group": None, "game": "",
+            "condition": None,
+            "id": None, "all_ids": [], "category_href": None, "box_art_url": None,
+            "twitch_link": (twitch_links or {}).get(set_id), "channel_count": 0,
+            "offline_event": False,
+            **fields,
+        }]
     return windows
 
 
 def add_catalog_windows(windows, badges, page_info=None, twitch_links=None):
     """ФОЛБЭК B: availability из САМОГО КАТАЛОГА (badges[].availability[]).
     Раньше build_records брал оттуда только condition, а start/end выбрасывал —
-    хотя это 131 бейдж (107 из них вообще не представлены в events.json)."""
+    хотя это 131 бейдж (107 из них вообще не представлены в events.json).
+    С ~27.09.2026 availability в каталоге нет: см. add_catalog_fields_windows."""
     for b in badges or []:
         set_id = b.get("current", {}).get("set_id")
         if not set_id or set_id in MANUAL_SET_IDS or windows.get(set_id):
@@ -820,7 +924,7 @@ def add_page_windows(windows, page_info, badges, twitch_links=None):
             "game": "",
             "start": start,
             "end": end,
-            "cost": "paid" if info.get("kind") in ("sub", "purchase") else "free",
+            "cost": PAGE_KIND_COST.get(info.get("kind")),
             "condition": condition,
             "id": None,
             "all_ids": [],
@@ -860,6 +964,12 @@ NO_DATE_GRACE_HOURS = 3
 
 def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_links=None):
     windows = windows_by_id.get(set_id, [])
+    # Кампанию отменили: SD ставит флаг на значок каталога. Окно могло остаться
+    # «будущим», но получить значок уже нельзя — не анонсируем и не шлём «стартовало».
+    if catalog_badge.get("cancelled") is True:
+        w = max(windows, key=lambda x: x.get("end") or x.get("start") or now, default=None)
+        return {"status": "ended", "window": w, "group": (w or {}).get("group"),
+                "note_kind": "cancelled"}
     active = [w for w in windows if w["start"] and w["end"] and w["start"] <= now <= effective_end(w)]
     upcoming = [w for w in windows if w["start"] and now < w["start"]]
     ended = [w for w in windows if w["end"] and now > effective_end(w)]
@@ -926,11 +1036,7 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_l
     info = (page_info or {}).get(set_id) or {}
     kind = info.get("kind")
     if kind and not info.get("too_late"):
-        seen = badge_first_seen(catalog_badge)
-        try:
-            added_dt = datetime.fromisoformat(seen.replace("Z", "+00:00")) if seen else None
-        except ValueError:
-            added_dt = None
+        added_dt = badge_added_dt(catalog_badge)
         if added_dt and (now - added_dt).days <= NO_DATE_ANNOUNCE_DAYS:
             # Условие — тем же способом, что и add_page_windows (watch-минуты, если
             # известны), а не голым PAGE_KIND_RU: для kind="watch" тот словарь пуст
@@ -945,7 +1051,7 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_l
             window = {
                 "event_title": "", "group": None, "game": "",
                 "start": None, "end": None,
-                "cost": "paid" if kind in ("sub", "purchase") else "free",
+                "cost": PAGE_KIND_COST.get(kind),
                 "condition": condition,
                 "id": None, "all_ids": [], "category_href": None, "box_art_url": None,
                 "twitch_link": (twitch_links or {}).get(set_id), "channel_count": 0,
@@ -971,11 +1077,7 @@ def classify(set_id, catalog_badge, windows_by_id, now, page_info=None, twitch_l
     pa_cost = next((cost_from_steps(av_objectives(av), None) for av in page_avs
                     if av_objectives(av)), None)
     if hx_cond or pa_cond:
-        seen = badge_first_seen(catalog_badge)
-        try:
-            added_dt = datetime.fromisoformat(seen.replace("Z", "+00:00")) if seen else None
-        except ValueError:
-            added_dt = None
+        added_dt = badge_added_dt(catalog_badge)
         # ...и не раньше, чем через NO_DATE_GRACE_HOURS после появления значка.
         # Обычно SD проставляет даты в первые часы: у WARDOG и WARLORD они
         # появились через 12 минут, и канал получил по ДВА поста на значок —
@@ -1439,7 +1541,10 @@ def holders_count(uc):
     return uc if isinstance(uc, int) and not isinstance(uc, bool) else None
 
 
-def build_records(snapshot):
+def build_records(snapshot, known_windows=None, overrides=None):
+    """known_windows/overrides=None — прочитать из файлов (как в проде).
+    Проверка формата передаёт {}: канарейка не должна опираться на память окон,
+    иначе потерю дат источником та маскирует ещё 14 дней."""
     now = datetime.now(timezone.utc)
     global _CATEGORY_URLS
     _CATEGORY_URLS = dict(snapshot.get("category_urls") or {})
@@ -1450,24 +1555,32 @@ def build_records(snapshot):
     windows_by_id = collect_windows_by_set_id(
         snapshot.get("events", []), snapshot.get("twitch_links"))
     # Приоритет источников окна (более точный НЕ перезаписывается):
-    #   events[].availability  >  page_info  >  events[].даты  >  badges[].availability
+    #   events[].availability  >  страница.availability  >  поля каталога  >
+    #   page_info  >  events[].даты  >  текст событий  >  badges[].availability
     page_info = snapshot.get("page_info")
     links = snapshot.get("twitch_links")
     badges = snapshot.get("badges", [])
     windows_by_id = add_page_availability_windows(
         windows_by_id, snapshot.get("page_availability"), links)
+    windows_by_id = add_catalog_fields_windows(windows_by_id, badges, page_info, links)
     windows_by_id = add_page_windows(windows_by_id, page_info, badges, links)
     windows_by_id = add_event_windows(windows_by_id, snapshot.get("events", []), page_info, links)
-    windows_by_id = add_event_content_windows(windows_by_id, snapshot.get("events", []), badges, page_info, links)
+    windows_by_id = add_event_content_windows(windows_by_id, snapshot.get("events", []), badges,
+                                              page_info, links, now)
     windows_by_id = add_catalog_windows(windows_by_id, badges, page_info, links)
     windows_by_id = enrich_windows(windows_by_id, page_info, links,
-                                   event_dates_by_set_id(snapshot.get("events", [])))
+                                   event_dates_by_set_id(snapshot.get("events", [])),
+                                   catalog_by_set_id(badges))
     # Второй автоматический источник — описание значка у Twitch (Helix).
     windows_by_id = apply_helix_info(windows_by_id, snapshot.get("helix"))
     # Память: возвращаем даты, которые источник когда-то отдавал, а теперь потерял.
-    windows_by_id = apply_known_windows(windows_by_id, load_known_windows(), now)
+    if known_windows is None:
+        known_windows = load_known_windows()
+    windows_by_id = apply_known_windows(windows_by_id, known_windows, now)
     # Человек — последний и главный источник: перекрывает всё, что выведено выше.
-    windows_by_id = apply_manual_overrides(windows_by_id, load_overrides())
+    if overrides is None:
+        overrides = load_overrides()
+    windows_by_id = apply_manual_overrides(windows_by_id, overrides)
     raw = []
     for b in snapshot.get("badges", []):
         cur = b.get("current", {})

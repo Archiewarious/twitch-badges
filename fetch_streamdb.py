@@ -194,7 +194,10 @@ def _parse_page_dates(text):
 def _fix_stale_year(dt, added_iso):
     """SD иногда копипастит описание с прошлогоднего бейджа (у La Velada VI стоял
     2025 год, хотя бейдж заведён в 2026). Если дата раньше момента добавления бейджа
-    больше чем на полгода — год явно устаревший, подтягиваем к году добавления."""
+    больше чем на полгода — год явно устаревший, подтягиваем к году добавления.
+
+    Не вызывать для значков, добавленных уже после своего окна (см.
+    parse_badge_page_text): у них старая дата настоящая."""
     if not dt or not added_iso:
         return dt
     try:
@@ -226,8 +229,11 @@ def _page_kind(low):
     return None
 
 
-def parse_badge_page_text(text, added_iso=None):
-    """Описание бейджа → структура (даты + признаки). Возвращает None, если дат нет."""
+def parse_badge_page_text(text, added_iso=None, catalog_end=None):
+    """Описание бейджа → структура (даты + признаки). Возвращает None, если дат нет.
+
+    added_iso и catalog_end — из page_parse_args: разбор обязан давать одно и то же
+    в сборе и в опросе (иначе опрос вечно видит «изменение»)."""
     if not text:
         return None
     start, end, start_time_known, end_time_known = _parse_page_dates(text)
@@ -246,8 +252,13 @@ def parse_badge_page_text(text, added_iso=None):
             "unconfirmed": bool(UNCONFIRMED_RE.search(text)),
             "too_late": bool(TOO_LATE_RE.search(text)),
         }
-    start = _fix_stale_year(start, added_iso)
-    end = _fix_stale_year(end, added_iso)
+    # Значок заведён уже после своего окна: SD так и пишет («added after the
+    # timeframe»), либо это видно по датам каталога. Тогда старые даты в тексте —
+    # правда, а не копипаста, и «чинить» год нельзя: вышло бы ложное «идёт сейчас».
+    late = bool(TOO_LATE_RE.search(text)) or _window_before_added(catalog_end, added_iso)
+    if not late:
+        start = _fix_stale_year(start, added_iso)
+        end = _fix_stale_year(end, added_iso)
     if end and end < start:                  # защита от кривого парса
         end = None
     low = text.lower()
@@ -335,8 +346,30 @@ PAGE_SCAN_DAYS = 32
 
 
 def _badge_added_at(badge):
-    stamps = [h.get("timestamp") for h in badge.get("history", []) if h.get("type") == "added"]
-    return max(stamps) if stamps else None
+    """Когда значок появился в каталоге (ISO-строка или None).
+
+    До ~27.09.2026 SD отдавал history[{type: "added", timestamp}], теперь —
+    поле added_at (history нет ни у одного значка). Без фолбэка молча
+    отключились сканирование страниц, монитор слепых зон и фолбэк «без дат»."""
+    stamps = [h.get("timestamp") for h in badge.get("history") or [] if h.get("type") == "added"]
+    if stamps:
+        return max(stamps)
+    return badge.get("added_at") or None
+
+
+def _window_before_added(end_iso_date, added_iso):
+    """Окно из каталога закончилось раньше, чем значок завели."""
+    if not end_iso_date or not added_iso:
+        return False
+    return str(end_iso_date)[:10] < str(added_iso)[:10]
+
+
+def page_parse_args(badge):
+    """Аргументы parse_badge_page_text для значка каталога: (added_iso, catalog_end).
+    Одна функция для сбора и опроса — разбор должен совпадать побайтно."""
+    if not badge:
+        return None, None
+    return _badge_added_at(badge), badge.get("end_at_date") or None
 
 
 def collect_badge_pages(build_id, events, badges):
@@ -347,7 +380,12 @@ def collect_badge_pages(build_id, events, badges):
          данными (La Velada, Budz и т.п.) — у SD там пусто, и вся информация о
          датах/условии живёт только в тексте описания. Без этого бот их не видит."""
     in_events_with_avail = set()
-    need = {}                       # set_id -> added_iso (или None)
+    need = {}                       # set_id -> (added_iso, catalog_end)
+    catalog = {}
+    for badge in badges:
+        sid = (badge.get("current") or {}).get("set_id")
+        if sid and sid not in catalog:
+            catalog[sid] = badge
     for ev in events:
         for badge in ev.get("twitch_global_badges", []):
             sid = badge.get("current", {}).get("set_id")
@@ -373,7 +411,7 @@ def collect_badge_pages(build_id, events, badges):
             # классифицировать», и тревога о молчащих ныла впустую.
             has_dates = any(av.get("start_at_date") or av.get("end_at_date") for av in avs)
             if not any(av.get("categories") for av in avs) or not has_cond or not has_dates:
-                need.setdefault(sid, None)
+                need.setdefault(sid, page_parse_args(catalog.get(sid)))
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=PAGE_SCAN_DAYS)
     for badge in badges:
@@ -385,12 +423,12 @@ def collect_badge_pages(build_id, events, badges):
             continue
         try:
             if datetime.fromisoformat(ts.replace("Z", "+00:00")) >= cutoff:
-                need[sid] = ts
+                need[sid] = page_parse_args(badge)
         except ValueError:
             continue
 
     links, infos, avails = {}, {}, {}
-    for sid, added_iso in need.items():
+    for sid, (added_iso, catalog_end) in need.items():
         badge = fetch_badge_page(build_id, sid)
         if badge is None:
             continue
@@ -405,7 +443,7 @@ def collect_badge_pages(build_id, events, badges):
         link = extract_link_from_text(text)
         if link:
             links[sid] = link
-        info = parse_badge_page_text(text, added_iso)
+        info = parse_badge_page_text(text, added_iso, catalog_end)
         if info:
             infos[sid] = info
     return links, infos, avails

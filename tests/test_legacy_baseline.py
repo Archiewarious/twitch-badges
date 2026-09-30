@@ -26,10 +26,11 @@ def fmt_posts(posts, t0):
 
 
 def test_fixture_matches_prod_state(fx, legacy):
-    """Состояние согласовано с данными: очередь пуста, 37 значков на показе."""
+    """Состояние согласовано с данными: очередь пуста, 39 значков на показе
+    (до C02 было 37: runescape-shrimp и yellow-party-hat выпадали из-за B1)."""
     sim = legacy(**fx)
     assert len(sim.records()) == 406
-    assert len(sim.shown()) == 37
+    assert len(sim.shown()) == 39
     assert sim.tick() == []
     assert sim.state == fx["published"]
 
@@ -170,9 +171,9 @@ def test_orphan_then_badge_no_second_post(fx, legacy):
     assert "real-badge" in sim.state
 
 
-def test_B1_no_date_badge_silent(fx, legacy):
-    """B1: новый формат — у значка added_at вместо history, и фолбэк «без дат»
-    его не видит: значок с условием от Twitch молчит."""
+def test_B1_no_date_badge_announced(fx, legacy):
+    """B1 (исправлено в C02): у значка added_at вместо history — фолбэк «без дат»
+    снова его видит и анонсирует один раз."""
     key = m.no_date_badge(fx["snapshot"], "test-nodate", "Test No Date",
                           added_at=T0 - m.hours(5),
                           description="This badge was earned by watching Arc Raiders "
@@ -180,17 +181,18 @@ def test_B1_no_date_badge_silent(fx, legacy):
     fx["media"]["images"].append(key)
     sim = legacy(**fx)
     rec = {r["set_id"]: r for r in sim.records()}["test-nodate"]
-    assert rec["status"] == "ended" and rec["first_seen"] is None
+    assert rec["status"] == "upcoming" and rec["first_seen"].startswith("2026-09-30T12:20")
+    assert [p.head for p in sim.tick()] == ["📣 Скоро новый значок / 🏷 Значок Test No Date"]
     assert sim.tick() == []
 
 
-def test_B10_bits_badge_marked_free(fx, legacy):
-    """B10: значок за Bits со страницы SD помечается бесплатным."""
+def test_B10_bits_badge_marked_paid(fx, legacy):
+    """B10 (исправлено в C02): значок за Bits со страницы SD — платный."""
     key = m.bits_page_badge(fx["snapshot"], "test-bits", "Test Bits",
                             start=T0 + m.days(2), end=T0 + m.days(9),
                             added_at=T0 - m.hours(4))
     fx["media"]["images"].append(key)
     sim = legacy(**fx)
     posts = sim.tick()
-    assert [p.head for p in posts] == ["📣 Скоро новый значок / 🟢 Бесплатный значок Test Bits"]
+    assert [p.head for p in posts] == ["📣 Скоро новый значок / 🟠 Платный значок Test Bits"]
     assert "Потратить Bits" in posts[0].caption

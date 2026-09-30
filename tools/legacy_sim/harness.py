@@ -150,6 +150,7 @@ class LegacySim:
         bot.PUBLISHED_FILE = d / "published.json"
         bot.HEARTBEAT_FILE = d / "bot_alive"
         bot.MONITOR_STATE = d / "monitor_state.json"
+        bot.IGNORE_FILE = d / "ignore.txt"
         site.KNOWN_WINDOWS_FILE = d / "known_windows.json"
         site.OVERRIDES_FILE = d / "overrides.json"
         site.IMAGES_DIR = d / "images"
@@ -218,6 +219,13 @@ class LegacySim:
             await bot.publish_new(self._ctx)
         finally:
             asyncio.sleep = real_sleep
+
+    def monitor(self, job: str = "check_blindspots") -> list[Alert]:
+        """Один прогон монитора бота (check_blindspots | check_anomalies)."""
+        n = len(self.alerts)
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            asyncio.run(getattr(bot, job)(self._ctx))
+        return self.alerts[n:]
 
     def run(self, start: _dt, step: timedelta, span: timedelta) -> list[Post]:
         """Прокрутка времени на неизменных данных: тик на каждом шаге."""

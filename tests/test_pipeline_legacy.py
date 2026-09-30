@@ -25,11 +25,11 @@ def _failed():
 
 def test_format_drift_detected(pipeline):
     pipeline.test_format_drift(load_fixture()["snapshot"])
-    assert len(tp.results) == 13
+    assert len(tp.results) == 19
     assert _failed() == []
 
 
 def test_new_campaign_picked_up(pipeline):
     pipeline.test_new_campaign(load_fixture()["snapshot"])
-    assert len(tp.results) == 4
+    assert len(tp.results) == 5
     assert _failed() == []

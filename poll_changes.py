@@ -35,7 +35,10 @@ REFRESH_UNIT = "twitch-badges-refresh.service"
 
 def badge_signature(badge):
     """То, что у значка влияет на наш пост: сам факт значка и его окно/условие.
-    user_count и history сознательно игнорируем — они меняются постоянно."""
+    user_count и history сознательно игнорируем — они меняются постоянно.
+
+    С ~27.09.2026 окно, цена и отмена лежат прямо на значке каталога — без них
+    сигнатура не замечала ни новых дат, ни продления, ни отмены."""
     cur = badge.get("current") or {}
     ver = cur.get("version") or {}
     avs = []
@@ -48,8 +51,11 @@ def badge_signature(badge):
             sorted(av.get("costs") or []),
             [(c.get("game") or {}).get("name") for c in av.get("categories") or []],
         ])
+    catalog = [badge.get(f) for f in ("start_at_date", "start_at_time", "end_at_date",
+                                      "end_at_time", "cost")]
+    catalog += [bool(badge.get("cancelled")), bool(badge.get("time_limited"))]
     return [cur.get("set_id"), ver.get("title"), ver.get("image_url_4x"),
-            bool(badge.get("added")), avs]
+            bool(badge.get("added")), avs, catalog]
 
 
 def event_signature(ev):
@@ -218,11 +224,11 @@ def page_changed(build_id, snapshot, set_ids):
     раз, и опрос дёргает refresh каждые две минуты вечно."""
     page_info = snapshot.get("page_info") or {}
     links = snapshot.get("twitch_links") or {}
-    added_by_id = {}
+    parse_args = {}
     for b in snapshot.get("badges") or []:
         sid = (b.get("current") or {}).get("set_id")
-        if sid and sid not in added_by_id:
-            added_by_id[sid] = collector._badge_added_at(b)
+        if sid and sid not in parse_args:
+            parse_args[sid] = collector.page_parse_args(b)
     for sid in set_ids:
         try:
             text = collector.badge_page_text(collector.fetch_badge_page(build_id, sid))
@@ -230,7 +236,7 @@ def page_changed(build_id, snapshot, set_ids):
             continue
         if not text:
             continue
-        info = collector.parse_badge_page_text(text, added_by_id.get(sid))
+        info = collector.parse_badge_page_text(text, *parse_args.get(sid, (None, None)))
         link = collector.extract_link_from_text(text)
         if info and info != page_info.get(sid):
             return f"у значка {sid} появилось описание с датами"
