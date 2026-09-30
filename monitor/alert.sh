@@ -12,7 +12,7 @@
 
 set -uo pipefail
 
-PROJ="/home/archie/projects/twitch-badges"
+PROJ="/home/alex/twitch-badges"
 STATE_DIR="$PROJ/data/alerts"
 RENOTIFY="${ALERT_RENOTIFY:-21600}"   # повторять активную тревогу не чаще, чем раз в 6ч
 LOCK="$STATE_DIR/.lock"

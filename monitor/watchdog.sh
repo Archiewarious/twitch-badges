@@ -4,7 +4,7 @@
 # Ставится на systemd timer. ОСНОВНОЙ источник тревог: у сбора и опроса
 # OnFailure нет намеренно — единичный неудачный прогон не событие для владельца.
 set -uo pipefail
-PROJ="/home/archie/projects/twitch-badges"
+PROJ="/home/alex/twitch-badges"
 ALERT="$PROJ/monitor/alert.sh"
 
 now=$(date +%s)

@@ -15,18 +15,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # 3. Пре-рендер карточек актуальных бейджей (читает incoming)
 ./venv/bin/python render_cards.py
 
-# 4. Деплой сайта
-sudo -n cp site/index.html /var/www/html/index.html
-sudo -n chown root:root /var/www/html/index.html
-sudo -n chmod 644 /var/www/html/index.html
-
-# 5. Деплой картинок и карточек (--delete убирает устаревшие)
-sudo -n mkdir -p /var/www/html/badges /var/www/html/cards
-sudo -n rsync -a --delete data/images/ /var/www/html/badges/
-sudo -n rsync -a --delete data/cards/  /var/www/html/cards/
-sudo -n chown -R root:root /var/www/html/badges /var/www/html/cards
-sudo -n chmod -R a+r /var/www/html/badges /var/www/html/cards
-
+# 4-5. Деплой на публичный веб — он остаётся на латвийском сервере (SITE_URL
+# указывает туда). rsync под sudo на той стороне, владелец root, --delete убирает устаревшее.
+LV_HOST="${DEPLOY_HOST:-user@old-host}"
+LV_SSH="ssh -p ${DEPLOY_PORT:-22} -i $HOME/.ssh/rezka_lv -o BatchMode=yes"
+RS=(rsync -rlt --chown=root:root --chmod=D755,F644 --rsync-path="sudo -n rsync" -e "$LV_SSH")
+"${RS[@]}" site/index.html "$LV_HOST:/var/www/html/index.html"
+"${RS[@]}" --delete data/images/ "$LV_HOST:/var/www/html/badges/"
+"${RS[@]}" --delete data/cards/  "$LV_HOST:/var/www/html/cards/"
 # 6. Commit-marker: атомарно публикуем свежий snapshot для бота.
 # cp (не mv) для бэкапа — чтобы не было окна, когда latest.json отсутствует
 # (иначе бот/generate между двумя mv увидят пропажу файла). mv incoming→latest —
