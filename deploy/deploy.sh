@@ -34,7 +34,7 @@ else
   as_user() { env DATA_DIR="$TB_DATA" TB_ENV_FILE="$TB_ENV" "$@"; }
 fi
 
-SHA="$(git -C "$TB_REPO" rev-parse --verify "$REF^{commit}")" || die "нет такого ref: $REF"
+SHA="$(git -c safe.directory='*' -C "$TB_REPO" rev-parse --verify "$REF^{commit}")" || die "нет такого ref: $REF"
 REL="$TB_BASE/releases/$SHA"
 mkdir -p "$TB_BASE/releases"
 
@@ -43,7 +43,7 @@ if [ ! -f "$REL/.ready" ]; then
   log "собираю релиз ${SHA:0:12}"
   rm -rf "$REL.tmp"
   mkdir -p "$REL.tmp"
-  git -C "$TB_REPO" archive "$SHA" | tar -x -C "$REL.tmp"
+  git -c safe.directory='*' -C "$TB_REPO" archive "$SHA" | tar -x -C "$REL.tmp"
   "$TB_PYTHON" -m venv "$REL.tmp/venv"
   "$REL.tmp/venv/bin/pip" install -q --disable-pip-version-check -r "$REL.tmp/requirements.lock"
   touch "$REL.tmp/.ready"
