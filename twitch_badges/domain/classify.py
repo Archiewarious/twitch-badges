@@ -3,7 +3,7 @@ from datetime import timedelta
 
 from ..timeutil import effective_end
 from .catalog import INVITE, PERIODIC, PERMANENT, RETIRED, STAFF, TECHNICAL, badge_added_dt
-from .categories import category_url_for
+from .categories import _category_name, category_href, category_url_for
 from .conditions import (PAGE_KIND_COST, PAGE_KIND_RU, av_objectives, condition_from_helix,
                          cost_from_steps, describe_condition_ru)
 from .descriptions import category_from_description, channel_from_description
@@ -141,6 +141,21 @@ def classify(cx, set_id, catalog_badge, windows_by_id, now, page_info=None, twit
         fresh = added_dt and (now - added_dt) < timedelta(hours=NO_DATE_GRACE_HOURS)
         if added_dt and not fresh and (now - added_dt).days <= NO_DATE_ANNOUNCE_DAYS:
             cat = category_from_description(hx.get("description"))
+            href = category_url_for(cx, cat)
+            # Описание Twitch категорию называет не всегда («watching Dragon's
+            # Dogma 2: Dark Arisen for 1 hour»), а у SD она есть в availability
+            # события или страницы. Без этого первый пост TheDragonsDogma
+            # (01.10.2026) повёл в Steam вместо категории на Twitch.
+            if not cat:
+                w_game = next((w for w in windows if w.get("game")), None)
+                if w_game:
+                    cat, href = w_game["game"], w_game.get("category_href")
+                else:
+                    for av in page_avs:
+                        name = _category_name(av.get("categories") or [])
+                        if name:
+                            cat, href = name, category_href(cx, av["categories"])
+                            break
             login = channel_from_description(hx.get("description"))
             window = {
                 # Группа по категории: WARDOG и WARLORD — одна кампания, и без
@@ -149,7 +164,7 @@ def classify(cx, set_id, catalog_badge, windows_by_id, now, page_info=None, twit
                 "start": None, "end": None,
                 "cost": pa_cost, "condition": pa_cond or hx_cond,
                 "id": None, "all_ids": [],
-                "category_href": category_url_for(cx, cat),
+                "category_href": href,
                 "box_art_url": None,
                 "twitch_link": ({"label": login, "url": f"https://www.twitch.tv/{login}"}
                                 if login else (twitch_links or {}).get(set_id)),
