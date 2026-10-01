@@ -61,7 +61,16 @@ class BotApp:
 
     # ── данные ──
     def storage_chat_id(self):
+        """Настоящий служебный канал (если владелец его завёл)."""
         return self.cfg.storage_chat_id or db.kv_get(self.conn, "channel", "storage_chat_id")
+
+    def upload_chat(self):
+        """(чат для загрузки карточек и сверки, удалять ли после). Без служебного
+        канала — личка владельца с немедленным удалением."""
+        sc = self.storage_chat_id()
+        if sc:
+            return sc, False
+        return (self.cfg.alert_chat_id or None), True
 
     def records(self):
         """Записи текущего снапшота на эту минуту (inline спрашивает часто)."""
@@ -102,10 +111,11 @@ class BotApp:
             from telegram import Bot
             self.alert_bot = Bot(cfg.alert_bot_token, request=make_request())
             await self.alert_bot.initialize()
-        self.media = MediaStore(self.conn, app.bot, storage_chat_id=self.storage_chat_id(),
-                                cards_dir=cfg.cards_dir)
+        up, delete_after = self.upload_chat()
+        self.media = MediaStore(self.conn, app.bot, storage_chat_id=up, cards_dir=cfg.cards_dir,
+                                delete_after_upload=delete_after)
         self.outbox = Outbox(self.conn, app.bot, channel_id=cfg.channel_id,
-                             storage_chat_id=self.storage_chat_id(),
+                             storage_chat_id=up,
                              media_for=self.media.media_for, alert=self.alert)
         if "kill_after_send" in cfg.faults:           # фаза 3, сценарий T4
             def die(*a, **k):
@@ -165,8 +175,10 @@ class BotApp:
         try:
             recs, _ = self.records()
             keys = [card_key(r) for r in recs if is_shown(r, now)]
-            if self.storage_chat_id():
-                self.media.storage_chat_id = self.outbox.storage_chat_id = self.storage_chat_id()
+            up, delete_after = self.upload_chat()
+            if up:
+                self.media.storage_chat_id = self.outbox.storage_chat_id = up
+                self.media.delete_after_upload = delete_after
                 await self.media.ensure([k for k in keys if k][:MEDIA_PER_RUN])
             if not (cfg.channel_id and cfg.publish_enabled):
                 return

@@ -202,3 +202,20 @@ def test_card_same_as_old_renderer(tmp_path):
     for r in recs:
         render_cards.render_card(r, tmp_path / "old.png")
         assert cards.render_card(r, img) == (tmp_path / "old.png").read_bytes()
+
+
+def test_upload_to_owner_dm_and_delete(tmp_path):
+    """Нет служебного канала: карточка грузится в личку владельца и сразу удаляется."""
+    tg = FakeTelegram()
+    (tmp_path / "cards").mkdir()
+    (tmp_path / "cards" / "a.png").write_bytes(png())
+    from twitch_badges import db
+
+    async def nosleep(*a):
+        pass
+    ms = MediaStore(db.create(tmp_path / "m.sqlite3"), tg.bot(), storage_chat_id=tg.owner_id,
+                    cards_dir=tmp_path / "cards", sleep=nosleep, delete_after_upload=True)
+    asyncio.run(ms.ensure(["a"]))
+    assert ms.file_id("a") and tg.chats[tg.owner_id].messages == {}
+    sent = [p for api, p in tg.calls if api == "sendPhoto"][0]
+    assert sent.get("disable_notification") is True
