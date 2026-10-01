@@ -4,7 +4,7 @@
 # отката БД — README, «Восстановление из бэкапа».
 #
 #   sudo deploy/rollback.sh [releases/<sha>]
-set -euo pipefail
+set -Eeuo pipefail
 TB_BASE="${TB_BASE:-/opt/twitch-badges}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 TARGET="${1:-$(cat "$TB_BASE/previous" 2>/dev/null || true)}"

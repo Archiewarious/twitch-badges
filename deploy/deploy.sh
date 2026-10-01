@@ -8,7 +8,7 @@
 # Данные: $TB_DATA (StateDirectory). Секреты: $TB_ENV (0640 root:twitchbadges).
 # Переменные для тестовой установки (без root): TB_NO_ROOT=1 SYSTEMCTL=true
 #   TB_BASE=… TB_DATA=… TB_UNITS=… TB_ENV=… TB_TESTS=quick|full|skip
-set -euo pipefail
+set -Eeuo pipefail
 
 REF="${1:?использование: deploy.sh <git-ref>}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,9 +29,9 @@ die() { printf '[deploy] ОШИБКА: %s\n' "$*" >&2; exit 1; }
 if [ "${TB_NO_ROOT:-0}" != 1 ]; then
   [ "$(id -u)" = 0 ] || die "нужен root (sudo)"
   id "$TB_USER" >/dev/null 2>&1 || die "нет пользователя $TB_USER — см. README, «Установка»"
-  as_user() { runuser -u "$TB_USER" -- env DATA_DIR="$TB_DATA" TB_ENV_FILE="$TB_ENV" "$@"; }
+  as_user() { (cd "$REL" && runuser -u "$TB_USER" -- env PYTHONPATH="$REL" DATA_DIR="$TB_DATA" TB_ENV_FILE="$TB_ENV" "$@"); }
 else
-  as_user() { env DATA_DIR="$TB_DATA" TB_ENV_FILE="$TB_ENV" "$@"; }
+  as_user() { (cd "$REL" && env PYTHONPATH="$REL" DATA_DIR="$TB_DATA" TB_ENV_FILE="$TB_ENV" "$@"); }
 fi
 
 SHA="$(git -c safe.directory='*' -C "$TB_REPO" rev-parse --verify "$REF^{commit}")" || die "нет такого ref: $REF"

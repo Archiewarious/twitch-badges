@@ -4,7 +4,7 @@
 # откат на старую систему (она остаётся установленной).
 #
 #   sudo deploy/cutover.sh [git-ref, по умолчанию refactor]
-set -euo pipefail
+set -Eeuo pipefail
 
 REF="${1:-refactor}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,12 +20,14 @@ OLD_PATHS="twitch-badges-bot-reload.path twitch-badges-overrides.path"
 STAGE=prepare
 
 log() { printf '\n\033[1m[cutover] %s\033[0m\n' "$*"; }
-tb() { runuser -u "$U" -- env DATA_DIR="$DATA" TB_ENV_FILE="$ENVF" "$PY" -m twitch_badges "$@"; }
+tb() { (cd "$BASE/current" && runuser -u "$U" -- env PYTHONPATH="$BASE/current" DATA_DIR="$DATA" TB_ENV_FILE="$ENVF" "$PY" -m twitch_badges "$@"); }
 
 [ "$(id -u)" = 0 ] || { echo "нужен sudo"; exit 1; }
 
 rollback() {
   rc=$?
+  # ловушка наследуется подоболочками (set -E): откатывает только главный процесс
+  [ "$BASHPID" != "$$" ] && exit "$rc"
   [ "$STAGE" = "finished" ] && exit 0
   echo "[cutover] ОШИБКА на шаге «$STAGE» — откатываюсь на старую систему" >&2
   if [ "$STAGE" != prepare ]; then
