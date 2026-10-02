@@ -165,6 +165,33 @@ def test_format_drift_alert(c):
     assert "format-drift" not in c.raised()
 
 
+def test_no_drift_when_sd_stops_writing_false_flags(c):
+    """02.10.2026 SD убрал cancelled/system (раньше false у каждого значка)."""
+    c.run()
+    for b in c.sd.badges:
+        b.pop("cancelled", None)
+        b.pop("system", None)
+    c.run(timedelta(minutes=31))
+    assert "format-drift" not in c.raised()
+
+
+def test_format_drift_on_weird_cancelled(c):
+    c.run()
+    c.sd.badges[0]["cancelled"] = "yes"
+    c.run(timedelta(minutes=31))
+    assert "format-drift" in c.raised()
+    assert "cancelled" in alerts.active(c.conn)["format-drift"]["body"]
+
+
+def test_format_drift_on_dropped_required_key(c):
+    c.run()
+    for b in c.sd.badges:
+        b.pop("cost", None)
+    c.run(timedelta(minutes=31))
+    assert "format-drift" in c.raised()
+    assert "cost" in alerts.active(c.conn)["format-drift"]["body"]
+
+
 def test_helix_401_token_refresh(c):
     c.run()
     c.sd.token = "rotated"                      # старый токен больше не принимают

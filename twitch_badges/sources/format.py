@@ -33,7 +33,13 @@ MIN_ADDED_SHARE = 0.3         # доля значков, у которых из�
 MIN_CATALOG_DATED = 50        # значков с датами прямо в каталоге
 
 
-CATALOG_KEYS = ("added", "added_at", "cost", "cancelled")   # читаем у каждого значка
+CATALOG_KEYS = ("added", "added_at", "cost")   # читаем у каждого значка
+
+
+# С 02.10.2026 SD не пишет cancelled/system, пока они false (раньше — false у каждого
+# значка, из-за чего требование ключа у 90% дало тревогу при 0 из 526). Флаг опционален:
+# нет ключа = не отменена; если появился — обязан быть булевым.
+CATALOG_OPTIONAL_FLAGS = ("cancelled",)
 
 
 MIN_KEY_SHARE = 0.9
@@ -87,6 +93,11 @@ def check_catalog_fields(problems, badges):
         problems.check(have >= MIN_KEY_SHARE * n,
                        f"каталог: поле {key} есть лишь у {have} из {n} значков — "
                        "формат каталога сменился")
+    for key in CATALOG_OPTIONAL_FLAGS:
+        odd = [b[key] for b in badges if key in b and not isinstance(b[key], bool)]
+        if odd:
+            problems.append(f"каталог: {key} у {len(odd)} значков не булево "
+                            f"(например, {odd[0]!r}) — сменился смысл поля")
     added = sum(1 for b in badges if _badge_added_at(b))
     problems.check(added >= MIN_ADDED_SHARE * n,
                    f"каталог: дата появления (added_at/history) есть лишь у {added} из {n} — "
