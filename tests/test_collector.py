@@ -107,9 +107,10 @@ def test_page_probe_triggers_collect(c):
     assert c.run(timedelta(minutes=2)).action == "no-change"   # без вечного цикла
 
 
-def test_page_layout_split(c):
+@pytest.mark.parametrize("layout", ["split", "split-stale"])
+def test_page_layout_split(c, layout):
     """02.10.2026 SD вынес contexts/availabilities из twitchGlobalBadge в pageProps."""
-    c.sd.page_layout = "split"
+    c.sd.page_layout = layout
     fresh = "runescape-shrimp"
     c.sd.pages[fresh] = {"availability": c.sd.page_avail[fresh], "contexts": [{"content":
         "This badge was awarded between October 2nd 2026 (18:00 UTC) and October 9th 2026 "

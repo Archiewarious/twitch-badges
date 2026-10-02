@@ -77,8 +77,10 @@ class StreamDB:
         pp = data.get("pageProps") or {}
         badge = dict(pp.get("twitchGlobalBadge") or {})
         # 02.10.2026 SD вынес описание и availability из значка на уровень страницы
-        # (pageProps.contexts / pageProps.availabilities): читаем оба места.
+        # (pageProps.contexts / pageProps.availabilities): читаем оба места. Непустой
+        # список страницы главнее: у части значков внутри остался пустой старый
+        # availability: [] (FFXIV Fan Festival), а данные уже снаружи.
         for key, page_key in (("contexts", "contexts"), ("availability", "availabilities")):
-            if key not in badge and page_key in pp:
+            if pp.get(page_key) or (key not in badge and page_key in pp):
                 badge[key] = pp[page_key]
         return badge

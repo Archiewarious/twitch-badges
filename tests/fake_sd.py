@@ -29,7 +29,8 @@ class FakeSD:
         self.page_avail = copy.deepcopy(snapshot.get("page_availability") or {})
         self.pages: dict[str, dict] = {}          # set_id -> объект значка страницы
         # inline — contexts/availability внутри twitchGlobalBadge (до 02.10.2026);
-        # split — рядом с ним в pageProps (contexts/availabilities); bare — нигде.
+        # split — рядом с ним в pageProps (contexts/availabilities); split-stale — то же,
+        # но внутри остался пустой старый availability: [] (FFXIV); bare — нигде.
         self.page_layout = "inline"
         self.build_id = "build-1"
         self.token = "tok-1"
@@ -107,8 +108,10 @@ class FakeSD:
             if self.page_layout == "inline":
                 return self._json({"pageProps": {"twitchGlobalBadge": badge}})
             ctx, avs = badge.pop("contexts", []), badge.pop("availability", [])
+            if self.page_layout == "split-stale":
+                badge["availability"] = []
             pp = {"twitchGlobalBadge": badge}
-            if self.page_layout == "split":
+            if self.page_layout.startswith("split"):
                 pp.update(contexts=ctx, availabilities=avs)
             return self._json({"pageProps": pp})
         return httpx.Response(404)
