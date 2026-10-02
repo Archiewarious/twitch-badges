@@ -28,6 +28,9 @@ class FakeSD:
         self.helix = copy.deepcopy(snapshot.get("helix") or {})
         self.page_avail = copy.deepcopy(snapshot.get("page_availability") or {})
         self.pages: dict[str, dict] = {}          # set_id -> объект значка страницы
+        # inline — contexts/availability внутри twitchGlobalBadge (до 02.10.2026);
+        # split — рядом с ним в pageProps (contexts/availabilities); bare — нигде.
+        self.page_layout = "inline"
         self.build_id = "build-1"
         self.token = "tok-1"
         self.helix_401 = 0                          # сколько раз ответить 401
@@ -99,6 +102,13 @@ class FakeSD:
         m = re.match(r"^twitch/global-badges/([^/]+)/1$", page)
         if m:
             sid = m.group(1)
-            badge = self.pages.get(sid) or {"availability": self.page_avail.get(sid, []), "contexts": []}
-            return self._json({"pageProps": {"twitchGlobalBadge": badge}})
+            badge = dict(self.pages.get(sid) or {"availability": self.page_avail.get(sid, []),
+                                                  "contexts": []})
+            if self.page_layout == "inline":
+                return self._json({"pageProps": {"twitchGlobalBadge": badge}})
+            ctx, avs = badge.pop("contexts", []), badge.pop("availability", [])
+            pp = {"twitchGlobalBadge": badge}
+            if self.page_layout == "split":
+                pp.update(contexts=ctx, availabilities=avs)
+            return self._json({"pageProps": pp})
         return httpx.Response(404)

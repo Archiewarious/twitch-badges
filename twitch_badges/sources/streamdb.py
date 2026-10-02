@@ -74,4 +74,11 @@ class StreamDB:
         except (HttpError, SourceFormatError) as e:
             self.page_errors.append(f"{set_id}: {e}")
             return None
-        return (data.get("pageProps") or {}).get("twitchGlobalBadge") or {}
+        pp = data.get("pageProps") or {}
+        badge = dict(pp.get("twitchGlobalBadge") or {})
+        # 02.10.2026 SD вынес описание и availability из значка на уровень страницы
+        # (pageProps.contexts / pageProps.availabilities): читаем оба места.
+        for key, page_key in (("contexts", "contexts"), ("availability", "availabilities")):
+            if key not in badge and page_key in pp:
+                badge[key] = pp[page_key]
+        return badge

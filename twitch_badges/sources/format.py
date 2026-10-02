@@ -227,6 +227,18 @@ def check_records(problems, snapshot, now):
                        "(fetch_streamdb.resolve_category_urls)")
 
 
+def check_pages(pstats) -> list[str]:
+    """Структура страниц значков. 02.10.2026 SD вынес contexts и availabilities из
+    twitchGlobalBadge в pageProps: страницы отвечали 200, но описаний, ссылок и
+    условий с них не стало, а проверки снапшота смотрели на события и молчали."""
+    p = Problems()
+    bad = pstats.get("pages_shapeless") or []
+    p.check(not bad, f"страницы значков: у {len(bad)} из {pstats.get('pages', 0)} нет "
+                     f"contexts/availability ({', '.join(bad[:3])}) — SD сменил структуру "
+                     "страницы; держим прошлые описания, ссылки и условия, новые не увидим")
+    return list(p)
+
+
 def check_snapshot(snapshot, now) -> list[str]:
     """Все проверки снапшота. Пусто — формат в порядке."""
     p = Problems()

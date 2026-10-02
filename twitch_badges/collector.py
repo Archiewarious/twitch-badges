@@ -30,7 +30,7 @@ from .domain.windows import remember_windows
 from .images import sync_images
 from .publisher.captions import is_shown
 from .sources import gql
-from .sources.format import check_snapshot
+from .sources.format import check_pages, check_snapshot
 from .sources.helix import HelixAuthError
 from .sources.http import DeadlineExceeded, HttpError
 from .sources.sd_parse import (badge_page_text, extract_link_from_text, page_availability,
@@ -169,11 +169,18 @@ def _probe_pages(conn, src, snap, badges, events, now, cfg, overrides) -> str | 
 def _collect_pages(src, events, badges, now, prev):
     links, infos, avails = {}, {}, {}
     scan = pages_to_scan(events, badges, now)
-    failed = []
+    failed, shapeless = [], []
     for sid, (added_iso, catalog_end) in scan.items():
         badge = src.sd.badge_page(sid)
         if badge is None:
             failed.append(sid)
+        elif not ("contexts" in badge and "availability" in badge):
+            # Ответила, но без contexts/availability — SD перекроил страницу
+            # (02.10.2026 так молча опустели все 21 страница). Как и при сбое,
+            # держим прошлое; format-drift скажет, что пора править разбор.
+            shapeless.append(sid)
+            badge = None
+        if badge is None:
             # Страница не ответила — берём прошлое, а не теряем данные молча (C4)
             for mine, key in ((links, "twitch_links"), (infos, "page_info"),
                               (avails, "page_availability")):
@@ -192,7 +199,8 @@ def _collect_pages(src, events, badges, now, prev):
         info = parse_badge_page_text(text, added_iso, catalog_end)
         if info:
             infos[sid] = info
-    return links, infos, avails, {"pages": len(scan), "pages_failed": failed}
+    return links, infos, avails, {"pages": len(scan), "pages_failed": failed,
+                                  "pages_shapeless": shapeless}
 
 
 def _category_names(events, page_avail, helix):
@@ -301,7 +309,7 @@ def run_once(conn, src: Sources, *, now: datetime, images_dir: Path, cards_dir: 
                     "page_availability": avails, "category_urls": urls,
                     "category_names": names, "helix": helix}
 
-        problems = check_snapshot(snapshot, now)
+        problems = check_pages(pstats) + check_snapshot(snapshot, now)
         stats["format_problems"] = problems
         known = db.kv_all(conn, "known_windows")
         built = build(snapshot, RecordsContext(now=now, known_windows=known, overrides=overrides))

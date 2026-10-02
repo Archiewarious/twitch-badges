@@ -107,6 +107,35 @@ def test_page_probe_triggers_collect(c):
     assert c.run(timedelta(minutes=2)).action == "no-change"   # без вечного цикла
 
 
+def test_page_layout_split(c):
+    """02.10.2026 SD вынес contexts/availabilities из twitchGlobalBadge в pageProps."""
+    c.sd.page_layout = "split"
+    fresh = "runescape-shrimp"
+    c.sd.pages[fresh] = {"availability": c.sd.page_avail[fresh], "contexts": [{"content":
+        "This badge was awarded between October 2nd 2026 (18:00 UTC) and October 9th 2026 "
+        "(18:00 UTC) to people who watched 60 minutes."}]}
+    r = c.run()
+    assert r.stats["pages_shapeless"] == [] and "format-drift" not in c.raised()
+    data = c.snap().data
+    assert data["page_availability"] == c.sd.page_avail
+    assert data["page_info"][fresh]["start"] == "2026-10-02T18:00:00Z"
+
+
+def test_page_layout_unknown_keeps_prev_and_alerts(c):
+    c.run()
+    before = c.snap().data["page_availability"]
+    assert before
+    c.sd.page_layout = "bare"
+    r = c.run(timedelta(minutes=31))
+    assert r.action == "collected" and len(r.stats["pages_shapeless"]) == r.stats["pages"]
+    assert c.snap().data["page_availability"] == before
+    assert "format-drift" in c.raised()
+    assert "страницы значков" in alerts.active(c.conn)["format-drift"]["body"]
+    c.sd.page_layout = "split"
+    c.run(timedelta(minutes=31))
+    assert "format-drift" not in c.raised()
+
+
 def test_sd_down_backoff(c):
     c.run()
     c.sd.fail(r"global-badges\.json", 503, times=100)
