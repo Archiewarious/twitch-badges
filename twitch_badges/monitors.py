@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import alerts, db
 from .domain.catalog import MANUAL_SET_IDS
-from .publisher.captions import is_shown, iso, watch_target
+from .publisher.captions import categories_line, is_shown, iso, watch_target
 from .sources.sd_parse import _badge_added_at
 
 log = logging.getLogger(__name__)
@@ -37,8 +37,11 @@ def anomalies(conn, records, now):
         if not is_shown(r, now):
             continue
         w = r.get("window") or {}
-        _, _, url = watch_target(r)
-        if not ((not r.get("condition") and not url) or (w.get("channel_count") and not url)):
+        # «Куда идти» — ссылка или перечень категорий: пост с ним говорит «в
+        # категориях RuneScape, Old School RuneScape…» со ссылками на каждую.
+        # Без перечня Yellow Party Hat (3 категории) будил владельца зря.
+        where = watch_target(r)[2] or categories_line(r)
+        if not ((not r.get("condition") and not where) or (w.get("channel_count") and not where)):
             continue
         live_ids.add(r["set_id"])
         first = seen.setdefault(r["set_id"], iso(now))
@@ -51,8 +54,9 @@ def anomalies(conn, records, now):
         if (now - since).total_seconds() < INCOMPLETE_ALERT_HOURS * 3600:
             continue
         hours = int((now - since).total_seconds() // 3600)
-        issues.append(f"❓ {r['title']}: выдаётся уже {hours} ч, а сказать «как получить» "
-                      "нечего — ни условия, ни ссылки")
+        lack = ("условие есть, но неизвестно, где смотреть — ни ссылки, ни категории"
+                if r.get("condition") else "сказать «как получить» нечего — ни условия, ни ссылки")
+        issues.append(f"❓ {r['title']}: выдаётся уже {hours} ч, а {lack}")
     seen = {k: v for k, v in seen.items() if k in live_ids}
     with db.tx(conn):
         db.kv_set(conn, "monitor", "incomplete_since", seen, now)

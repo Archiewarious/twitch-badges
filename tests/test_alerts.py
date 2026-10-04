@@ -11,6 +11,8 @@ from conftest import REPO, T0, load_fixture
 
 from twitch_badges import alerts, db, monitors
 from twitch_badges.domain.records import RecordsContext, build_records
+from twitch_badges.publisher.captions import watch_target
+from twitch_badges.sources import sd_parse
 
 
 @pytest.fixture
@@ -121,6 +123,59 @@ def test_anomaly_after_24h(conn):
     assert monitors.anomalies(conn, _recs(snap), T0) == []
     issues = monitors.anomalies(conn, _recs(snap, T0 + m.hours(25)), T0 + m.hours(25))
     assert len(issues) == 1 and "Test NC" in issues[0] and "anomalies" in alerts.active(conn)
+
+
+def _channel_badge(snap, set_id, title, *, categories=(), channels=0, logins=None):
+    """Значок «смотри эфир 1 час» с каналами раздачи (после trim_channels)."""
+    m.new_badge(snap, set_id, title, start=T0 - m.hours(1), end=T0 + m.days(9),
+                added_at=T0 - m.hours(2))
+    av = m.find_event(snap, title)["twitch_global_badges"][0]["availability"][0]
+    av["categories"] = [{"id": str(i), "name": n} for i, n in enumerate(categories)]
+    av["channel_count"] = channels
+    if logins:
+        av["channel_logins"] = logins
+    return av
+
+
+def _anomalies_after_day(conn, snap):
+    monitors.anomalies(conn, _recs(snap), T0)
+    later = T0 + m.hours(25)
+    return monitors.anomalies(conn, _recs(snap, later), later)
+
+
+def test_anomaly_quiet_when_categories_listed(conn):
+    """Yellow Party Hat (04.10.2026): 4 канала и 3 категории — пост перечислял
+    категории со ссылками, а монитор кричал «ни условия, ни ссылки»."""
+    snap = load_fixture()["snapshot"]
+    _channel_badge(snap, "test-yph", "Test YPH", channels=4,
+                   categories=("RuneScape", "Old School RuneScape", "RuneScape: Dragonwilds"))
+    assert _anomalies_after_day(conn, snap) == []
+
+
+def test_single_channel_gives_link(conn):
+    snap = load_fixture()["snapshot"]
+    _channel_badge(snap, "test-one", "Test One", channels=1, logins=["oldschoolrs"])
+    r = next(r for r in _recs(snap) if r["set_id"] == "test-one")
+    assert watch_target(r) == ("channel", "oldschoolrs", "https://www.twitch.tv/oldschoolrs")
+    assert _anomalies_after_day(conn, snap) == []
+
+
+def test_anomaly_text_when_condition_known(conn):
+    snap = load_fixture()["snapshot"]
+    _channel_badge(snap, "test-many", "Test Many", channels=5)
+    issues = _anomalies_after_day(conn, snap)
+    assert len(issues) == 1 and "условие есть, но неизвестно, где смотреть" in issues[0]
+
+
+def test_trim_channels_keeps_short_lists():
+    chan = lambda login: {"user": {"login": login}}  # noqa: E731
+    events = [{"twitch_global_badges": [{"availability": [
+        {"channels": [chan("oldschoolrs")]},
+        {"channels": [chan(f"s{i}") for i in range(4)]},
+    ]}]}]
+    one, many = sd_parse.trim_channels(events)[0]["twitch_global_badges"][0]["availability"]
+    assert one == {"channel_count": 1, "channel_logins": ["oldschoolrs"]}
+    assert many == {"channel_count": 4}
 
 
 def test_collector_and_telegram_health(conn):

@@ -310,14 +310,24 @@ def pages_to_scan(events, badges, now) -> dict:
     return need
 
 
+KEEP_CHANNEL_LOGINS = 3
+
+
 def trim_channels(events):
     """Списки участников (у EWC ~1400 стримеров) — 90% снапшота, а нужен только
-    факт наличия каналов: оставляем счётчик."""
+    факт наличия каналов: оставляем счётчик. Короткие списки (≤ 3) — ещё и логины:
+    единственный канал раздачи и есть ответ «где смотреть» (single_channel_link)."""
     for ev in events:
         for badge in ev.get("twitch_global_badges", []):
             for av in badge.get("availability", []):
                 chans = av.pop("channels", None)
+                if not isinstance(chans, list):
+                    chans = []
                 if "channel_count" not in av:
-                    av["channel_count"] = len(chans) if isinstance(chans, list) else 0
+                    av["channel_count"] = len(chans)
+                logins = [((c or {}).get("user") or {}).get("login") for c in chans]
+                logins = [x for x in logins if x]
+                if logins and len(chans) <= KEEP_CHANNEL_LOGINS:
+                    av["channel_logins"] = logins
     return events
 

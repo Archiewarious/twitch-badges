@@ -55,3 +55,29 @@ def channel_from_description(desc: str):
     """Логин канала из описания значка («/PlaqueBoyMax»), иначе None."""
     m = CHANNEL_IN_DESC_RE.search(desc or "")
     return m.group(1) if m else None
+
+
+TWITCH_URL_RE = re.compile(r"^https://(?:www\.)?twitch\.tv/")
+LOGIN_RE = re.compile(r"[A-Za-z0-9_]+")
+
+
+def single_channel_link(av):
+    """Ссылка на канал раздачи, если он ОДИН. Yellow Party Hat давали за просмотр
+    одного OldSchoolRS, SD это знал, а пост не мог сказать, куда идти: списки
+    каналов мы обрезаем (trim_channels), и оставался лишь счётчик."""
+    logins = av.get("channel_logins")
+    if logins is None:
+        logins = [((c or {}).get("user") or {}).get("login") for c in av.get("channels") or []]
+    logins = [x for x in logins or [] if x]
+    if len(logins) != 1 or not LOGIN_RE.fullmatch(logins[0]):
+        return None
+    return {"label": logins[0], "url": f"https://www.twitch.tv/{logins[0]}"}
+
+
+def pick_twitch_link(page_link, av):
+    """Ссылка со страницы значка; если её нет или она ведёт мимо Twitch (магазин
+    игры), а канал раздачи один, — на этот канал: значок дают там, а не в Steam."""
+    ch = single_channel_link(av or {})
+    if ch and not TWITCH_URL_RE.match(str((page_link or {}).get("url") or "")):
+        return ch
+    return page_link

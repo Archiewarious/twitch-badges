@@ -6,7 +6,7 @@ from .catalog import INVITE, PERIODIC, PERMANENT, RETIRED, STAFF, TECHNICAL, bad
 from .categories import _category_name, category_href, category_url_for
 from .conditions import (PAGE_KIND_COST, PAGE_KIND_RU, av_objectives, condition_from_helix,
                          cost_from_steps, describe_condition_ru)
-from .descriptions import category_from_description, channel_from_description
+from .descriptions import category_from_description, channel_from_description, pick_twitch_link
 from .text import ru_duration_minutes
 
 NO_DATE_ANNOUNCE_DAYS = 14   # свежий бейдж без дат ещё считаем новостью
@@ -167,7 +167,8 @@ def classify(cx, set_id, catalog_badge, windows_by_id, now, page_info=None, twit
                 "category_href": href,
                 "box_art_url": None,
                 "twitch_link": ({"label": login, "url": f"https://www.twitch.tv/{login}"}
-                                if login else (twitch_links or {}).get(set_id)),
+                                if login else pick_twitch_link((twitch_links or {}).get(set_id),
+                                                               next(iter(page_avs), None))),
                 "channel_count": 0, "offline_event": False, "dates_coarse": True,
                 "dates_unknown": True,
             }
