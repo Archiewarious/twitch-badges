@@ -80,6 +80,7 @@ NOTE_KIND_LABEL = {
     "periodic": "периодически",
     "removed": "удалён из Twitch",
     "cancelled": "кампания отменена",
+    "evolution": "эволюция значка",
     "unknown": "неизвестно",
 }
 

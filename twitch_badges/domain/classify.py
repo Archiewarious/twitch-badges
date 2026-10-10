@@ -1,4 +1,5 @@
 """Статус значка (active / upcoming / ended) по его окнам."""
+import re
 from datetime import timedelta
 
 from ..timeutil import effective_end
@@ -10,6 +11,11 @@ from .descriptions import category_from_description, channel_from_description, p
 from .text import ru_duration_minutes
 
 NO_DATE_ANNOUNCE_DAYS = 14   # свежий бейдж без дат ещё считаем новостью
+
+
+# «This badge was earned by evolving a badge from the Pokémon First Partners
+# Collection campaign» / «…by evolving the Night Out 2026 Haunter badge».
+EVOLUTION_RE = re.compile(r"(?i)\bearned by evolving\b")
 
 
 # Сколько ждём, прежде чем анонсировать значок БЕЗ дат: SD обычно дозаполняет их
@@ -174,5 +180,13 @@ def classify(cx, set_id, catalog_badge, windows_by_id, now, page_info=None, twit
             }
             return {"status": "upcoming", "window": window, "group": window["group"],
                     "note_kind": None}
+
+    # Эволюция другого значка (Pichu → Pikachu): без значка-предшественника её
+    # не получить, а SD пишет лишь «More information coming later» — ни дат, ни
+    # условия (05.10.2026, десять покемонов будили владельца каждые 3 часа).
+    # Сюда доходим, только если окон и условия нет нигде: как только SD их
+    # заполнит, сработают ветки выше, и значок анонсируется как обычно.
+    if EVOLUTION_RE.search((cx.helix.get(set_id) or {}).get("description") or ""):
+        return {"status": "ended", "window": None, "group": None, "note_kind": "evolution"}
 
     return {"status": "ended", "window": None, "group": None, "note_kind": "unknown"}

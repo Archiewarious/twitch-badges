@@ -113,6 +113,29 @@ def test_blindspot_reported_once(conn):
     assert monitors.blindspots(conn, snap, recs, T0, ignore={"test-silent"}) == {}
 
 
+EVOLVE = "This badge was earned by evolving a badge from the Pokémon First Partners Collection campaign."
+
+
+def test_evolution_without_data_is_not_a_blindspot(conn):
+    """Pikachu & Co (05.10.2026): эволюции без дат и условия будили владельца
+    каждые 3 часа «нет дат — не знаю, как классифицировать»."""
+    snap = load_fixture()["snapshot"]
+    snap["badges"].append(m.catalog_badge("test-evo", "Test Evo", added_at=T0 - m.days(2)))
+    snap.setdefault("helix", {})["test-evo"] = {"description": EVOLVE}
+    r = next(r for r in _recs(snap) if r["set_id"] == "test-evo")
+    assert r["note_kind"] == "evolution" and monitors.hidden_reason(r)
+    assert monitors.blindspots(conn, snap, _recs(snap), T0) == {}
+
+
+def test_evolution_with_window_is_announced_normally(conn):
+    snap = load_fixture()["snapshot"]
+    snap["badges"].append(m.catalog_badge("test-evo", "Test Evo", added_at=T0 - m.days(2),
+                                          start=T0 - m.hours(1), end=T0 + m.days(5)))
+    snap.setdefault("helix", {})["test-evo"] = {"description": EVOLVE}
+    r = next(r for r in _recs(snap) if r["set_id"] == "test-evo")
+    assert r["status"] == "active" and r["note_kind"] is None
+
+
 def test_anomaly_after_24h(conn):
     snap = load_fixture()["snapshot"]
     m.new_badge(snap, "test-nc", "Test NC", start=T0 - m.hours(1), end=T0 + m.days(9),

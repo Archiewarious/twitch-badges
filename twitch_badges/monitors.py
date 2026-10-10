@@ -83,6 +83,8 @@ def hidden_reason(r):
         return "анонс за горизонтом"
     if r.get("note_kind") == "cancelled":
         return "кампания отменена"
+    if r.get("note_kind") == "evolution":
+        return "эволюция значка: даты и условие SD не опубликовал"
     if r["status"] == "ended" and w.get("end"):
         return "окно закрылось"
     return None
