@@ -220,7 +220,8 @@ class BotApp:
 
     async def job_anomalies(self, ctx):
         recs, _ = self.records()
-        monitors.anomalies(self.conn, recs, db.utcnow())
+        monitors.anomalies(self.conn, recs, db.utcnow(),
+                           monitors.load_ignore(self.cfg.ignore_file))
 
     async def job_blindspots(self, ctx):
         snap = store.current_snapshot(self.conn)

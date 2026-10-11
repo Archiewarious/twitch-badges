@@ -29,12 +29,14 @@ def _monitor(conn) -> dict:
             "blindspots": db.kv_get(conn, "monitor", "blindspots", []) or []}
 
 
-def anomalies(conn, records, now):
-    """Выдаётся дольше суток, а сказать «как получить» нечего."""
+def anomalies(conn, records, now, ignore=frozenset()):
+    """Выдаётся дольше суток, а сказать «как получить» нечего. ignore — тот же
+    список manual/ignore.txt, что и у слепых зон: владелец уже знает, что SD по
+    значку молчит (Creator Campaign Reward), и тревога раз в 6 часов не нужна."""
     seen = dict(_monitor(conn)["incomplete_since"])
     issues, live_ids = [], set()
     for r in records:
-        if not is_shown(r, now):
+        if not is_shown(r, now) or r["set_id"] in ignore:
             continue
         w = r.get("window") or {}
         # «Куда идти» — ссылка или перечень категорий: пост с ним говорит «в

@@ -201,6 +201,19 @@ def test_trim_channels_keeps_short_lists():
     assert many == {"channel_count": 4}
 
 
+def test_anomaly_honours_ignore(conn):
+    snap = load_fixture()["snapshot"]
+    m.new_badge(snap, "test-nc", "Test NC", start=T0 - m.hours(1), end=T0 + m.days(9),
+                added_at=T0 - m.hours(2))
+    m.clear_condition(snap, "test-nc")
+    m.find_event(snap, "Test NC")["twitch_global_badges"][0]["availability"][0]["categories"] = []
+    later = T0 + m.hours(25)
+    monitors.anomalies(conn, _recs(snap), T0, ignore={"test-nc"})
+    assert monitors.anomalies(conn, _recs(snap, later), later, ignore={"test-nc"}) == []
+    monitors.anomalies(conn, _recs(snap), T0)
+    assert len(monitors.anomalies(conn, _recs(snap, later), later)) == 1
+
+
 def test_collector_and_telegram_health(conn):
     with db.tx(conn):
         db.kv_set(conn, "collector", "state", {"last_ok_at": T0.isoformat(),
