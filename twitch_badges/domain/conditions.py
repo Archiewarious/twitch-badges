@@ -3,8 +3,37 @@ import re
 
 from .text import plural, ru_duration_minutes, tier_ru, _subs_ru
 
+# 11.10.2026 SD переименовал типы шагов и их поля: watch → twitch_watch
+# (watch_minutes → minutes), subscription → twitch_subscription
+# (subscription_amount/tier → amount/tier), subscription_gift →
+# twitch_gift_subscription, twitchcon → twitch_twitchcon_ticket (twitchcon_days →
+# days), clip → twitch_clip. Приводим к прежнему виду, чтобы читать оба формата.
+STEP_TYPE_ALIASES = {"gift_subscription": "subscription_gift", "twitchcon_ticket": "twitchcon"}
+
+
+def normalize_step(step):
+    step = step or {}
+    t = step.get("type") or ""
+    if t.startswith("twitch_"):
+        t = t[len("twitch_"):]
+    t = STEP_TYPE_ALIASES.get(t, t)
+    out = dict(step, type=t or None)
+    if t in ("subscription", "subscription_gift"):
+        out.setdefault(f"{t}_amount", step.get("amount"))
+        out.setdefault(f"{t}_tier", step.get("tier"))
+    elif t == "watch":
+        out.setdefault("watch_minutes", step.get("minutes"))
+        out.setdefault("watch_days", step.get("days"))
+    elif t == "twitchcon":
+        out.setdefault("twitchcon_days", step.get("days"))
+    elif t == "bits":
+        out.setdefault("bits_amount", step.get("amount"))
+    return out
+
+
 def _step_ru(step):
     """Один шаг из steps → русская формулировка. Незнакомый тип → None."""
+    step = normalize_step(step)
     t = step.get("type")
     if t == "watch":
         mins = step.get("watch_minutes")
@@ -46,7 +75,7 @@ def cost_from_steps(steps, fallback):
     и пилюля цены просто не отображалась."""
     if not steps:
         return fallback
-    types = {(st or {}).get("type") for stage in steps for st in (stage or [])}
+    types = {normalize_step(st).get("type") for stage in steps for st in (stage or [])}
     if not types:
         return fallback
     return "paid" if types & PAID_STEP_TYPES else "free"
