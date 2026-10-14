@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from . import db
+from .timeutil import in_quiet_hours
 
 log = logging.getLogger(__name__)
 
@@ -117,11 +118,18 @@ def render_recovery(key, note) -> str:
 class AlertSender:
     """send(text) — корутина отправки владельцу (отдельным ботом, если он есть)."""
 
-    def __init__(self, conn, send, clock=db.utcnow):
+    def __init__(self, conn, send, clock=db.utcnow, quiet=(0, 0)):
         self.conn, self.send, self.clock = conn, send, clock
+        self.quiet = quiet
 
     async def flush(self) -> int:
         now = self.clock()
+        # Тихие часы (QUIET_HOURS_START/END, МСК): владелец просил не будить ночью
+        # (14.10.2026: format-drift, «восстановлено» и burst пришли в 3:11–3:17).
+        # Тревоги копятся в таблице; утром уйдут те, что ещё активны, а снятые за
+        # ночь и ни разу не отправленные исчезнут молча (ветка DELETE ниже).
+        if in_quiet_hours(now, *self.quiet):
+            return 0
         sent = 0
         rows = [dict(r) for r in self.conn.execute("SELECT * FROM alerts ORDER BY key")]
         for r in rows:

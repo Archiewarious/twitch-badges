@@ -214,6 +214,25 @@ def test_anomaly_honours_ignore(conn):
     assert len(monitors.anomalies(conn, _recs(snap, later), later)) == 1
 
 
+def test_sender_quiet_hours(conn):
+    """Ночью (23–9 МСК) тревоги ждут утра; снятые за ночь не приходят вовсе."""
+    sent, clock = [], Clock()
+    clock.now = clock.now.replace(hour=0, minute=10)          # 03:10 МСК
+
+    async def send(text):
+        sent.append(text)
+    s = alerts.AlertSender(conn, send, clock, quiet=(23, 9))
+    with db.tx(conn):
+        alerts.raise_alert(conn, "format-drift", "формат", "…", clock.now)
+        alerts.raise_alert(conn, "burst", "8 групп", "…", clock.now)
+    assert asyncio.run(s.flush()) == 0 and sent == []
+    with db.tx(conn):
+        alerts.clear_alert(conn, "format-drift", "снова в порядке", clock.now)
+    clock.now = clock.now.replace(hour=6, minute=1)           # 09:01 МСК
+    assert asyncio.run(s.flush()) == 1 and len(sent) == 1 and "8 групп" in sent[0]
+    assert "формат" not in sent[0]
+
+
 def test_collector_and_telegram_health(conn):
     with db.tx(conn):
         db.kv_set(conn, "collector", "state", {"last_ok_at": T0.isoformat(),

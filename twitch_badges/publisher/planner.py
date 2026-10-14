@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from ..timeutil import effective_end
+from ..timeutil import in_quiet_hours as quiet_hours
 from .captions import dedup_key, is_shown, iso, window_vague
 
 # Виды постов
@@ -128,12 +129,7 @@ def _parse(s):
 
 
 def in_quiet_hours(now, cfg: PlanConfig) -> bool:
-    if cfg.quiet_start == cfg.quiet_end:
-        return False
-    h = (now + timedelta(hours=3)).hour
-    if cfg.quiet_start < cfg.quiet_end:
-        return cfg.quiet_start <= h < cfg.quiet_end
-    return h >= cfg.quiet_start or h < cfg.quiet_end
+    return quiet_hours(now, cfg.quiet_start, cfg.quiet_end)
 
 
 def night_hold(kind, r, now, cfg: PlanConfig) -> bool:

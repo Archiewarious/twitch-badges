@@ -200,7 +200,8 @@ class BotApp:
         async def send(text):
             await bot.send_message(chat_id=chat, text=text, parse_mode=ParseMode.HTML,
                                    disable_web_page_preview=True)
-        await alerts.AlertSender(self.conn, send).flush()
+        await alerts.AlertSender(self.conn, send,
+                                 quiet=(self.cfg.quiet_start, self.cfg.quiet_end)).flush()
 
     async def job_health(self, ctx):
         now = db.utcnow()

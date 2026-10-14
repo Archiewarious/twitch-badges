@@ -47,7 +47,21 @@ send() {
   printf 'url = "%s%s/sendMessage"\n' "$API" "$token" \
     | curl -4 -fsS -m 20 --retry 3 --retry-delay 3 -K - \
         --data-urlencode "chat_id=${chat}" --data-urlencode "text=${text}" \
-        -d disable_web_page_preview=true >/dev/null
+        -d disable_web_page_preview=true -d "disable_notification=$(quiet_now)" >/dev/null
+}
+
+# Тихие часы (QUIET_HOURS_START/END, МСК): владелец просил не будить ночью.
+# Тревоги бота в это время ждут утра; сторож же сообщает о падении бота сразу,
+# но беззвучно — чтобы утром это было первым, что видно.
+quiet_now() {
+  local s e h
+  s="$(env_get QUIET_HOURS_START)"; e="$(env_get QUIET_HOURS_END)"
+  s=$((10#${s:-0})); e=$((10#${e:-0}))
+  h=$((10#$(TZ=Europe/Moscow date +%H)))
+  if [ "$s" -eq "$e" ]; then echo false
+  elif [ "$s" -lt "$e" ]; then { [ "$h" -ge "$s" ] && [ "$h" -lt "$e" ]; } && echo true || echo false
+  else { [ "$h" -ge "$s" ] || [ "$h" -lt "$e" ]; } && echo true || echo false
+  fi
 }
 
 exec 9>"$STATE_DIR/.lock"

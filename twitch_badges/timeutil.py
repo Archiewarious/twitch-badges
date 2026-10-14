@@ -1,6 +1,6 @@
 """Время StreamDatabase (UTC) и конец окна."""
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 SD_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d{1,6})?)?$")
 
@@ -31,3 +31,13 @@ def effective_end(w):
     if e and w.get("dates_coarse"):
         return e.replace(hour=23, minute=59, second=59)
     return e
+
+
+def in_quiet_hours(now, start, end) -> bool:
+    """Тихие часы по МСК (UTC+3): [start, end), через полночь тоже. start == end — выключены."""
+    if start == end:
+        return False
+    h = (now + timedelta(hours=3)).hour
+    if start < end:
+        return start <= h < end
+    return h >= start or h < end
