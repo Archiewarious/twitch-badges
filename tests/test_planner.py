@@ -284,6 +284,26 @@ def test_quiet_hours_hold_nonurgent():
     assert heads(sim.tick(night + m.hours(9))) == [(P.APPEARED_UPCOMING, ("test-new",))]
 
 
+def test_quiet_hours_hold_upcoming_soon():
+    """Castlevania (15.10.2026): «скоро» со стартом через 22 ч ушло в 08:48 МСК."""
+    cfg = P.PlanConfig(quiet_start=23, quiet_end=9)
+    night = T0.replace(hour=5, minute=48)          # 08:48 МСК
+    sim = sim_with(lambda s: m.new_badge(s, "test-soon", "Test Soon", start=night + m.hours(22),
+                                         end=night + m.days(18), added_at=night - m.hours(1)),
+                   now=night, cfg=cfg)
+    assert sim.tick() == []
+    assert heads(sim.tick(night + m.hours(1))) == [(P.APPEARED_UPCOMING, ("test-soon",))]
+
+
+def test_quiet_hours_let_through_appeared_and_running():
+    cfg = P.PlanConfig(quiet_start=23, quiet_end=9)
+    night = T0.replace(hour=22)                    # 01:00 МСК
+    sim = sim_with(lambda s: m.new_badge(s, "test-now", "Test Now", start=night - m.hours(1),
+                                         end=night + m.days(9), added_at=night - m.hours(1)),
+                   now=night, cfg=cfg)
+    assert heads(sim.tick()) == [(P.APPEARED_ACTIVE, ("test-now",))]
+
+
 # ── чистка ──
 
 def test_cleanup_after_30_days_not_live():

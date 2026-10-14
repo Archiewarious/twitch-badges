@@ -132,14 +132,13 @@ def in_quiet_hours(now, cfg: PlanConfig) -> bool:
     return quiet_hours(now, cfg.quiet_start, cfg.quiet_end)
 
 
-def night_hold(kind, r, now, cfg: PlanConfig) -> bool:
-    """Несрочное придерживаем в тихие часы; срочное — всегда сразу."""
-    if kind in (ENDING, DATES, COND, EXTENDED, APPEARED_NODATES):
-        return True
-    if kind == APPEARED_UPCOMING:
-        s = (r.get("window") or {}).get("start")
-        return bool(s) and (s - now).total_seconds() > cfg.ending_window
-    return False
+def night_hold(kind, item) -> bool:
+    """Тихие часы: ночью проходит ТОЛЬКО «значок появился и уже идёт» (новая
+    кампания, анонса ещё не было). Всё остальное — «скоро», «стартовало»,
+    уточнения, «последний день» — ждёт утра. Раньше «скоро» со стартом ближе
+    суток считался срочным, и анонс Castlevania ушёл в 08:48 МСК (15.10.2026);
+    владелец: «с 23 до 9 утра не должно быть никаких сообщений»."""
+    return not (kind in (APPEARED_ACTIVE, ACTIVE_SHORT) and "announce" in item.stages)
 
 
 def live_records(records, now) -> dict:
@@ -314,7 +313,7 @@ def plan(records, campaigns: dict, aliases: dict, *, now: datetime, data_at: dat
     night = in_quiet_hours(now, cfg)
     ready = []
     for kind, item in announce:
-        if night and night_hold(kind, item.record, now, cfg):
+        if night and night_hold(kind, item):
             res.held.append((item.campaign_id, kind, "тихие часы"))
         else:
             ready.append((kind, item))
