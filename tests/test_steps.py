@@ -44,3 +44,15 @@ def _problems(steps):
 def test_format_check_accepts_new_names_and_flags_unknown():
     assert _problems(NEW) == []
     assert _problems([[{"type": "twitch_clip"}, {"type": "twitch_hologram"}]])
+
+
+def test_unlock_step_is_prerequisite_stage():
+    """14.10.2026 SD: эволюции покемонов — «получи значок», затем «смотри 20 мин × 3 дня»."""
+    steps = [[{"type": "twitch_unlock",
+               "twitch_global_chat_badges": [{"set_id": "gengar", "version": {"id": "1"}}]}],
+             [{"type": "twitch_watch", "minutes": 20, "days": 3}]]
+    text = describe_steps_ru(steps)
+    assert text.startswith("Иметь предыдущий значок эволюции, затем смотреть эфир")
+    assert "3 разных дня" in text and "gengar" not in text
+    assert cost_from_steps(steps, None) == "free"
+    assert _problems(steps) == []
