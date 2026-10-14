@@ -40,7 +40,10 @@ DIR_LINK_RE = re.compile(
 ANY_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\((https://[^)]+)\)")
 
 
-IGNORED_LINK_DOMAINS = ("pastebin.com",)
+# streamdatabase.com — сам источник: у эволюций покемонов описание ссылается на
+# страницу предыдущего значка на SD (14.10.2026), и пост подписывал её «официальный
+# сайт». Читателю это не нужно, а стало бы подделкой за первоисточник.
+IGNORED_LINK_DOMAINS = ("pastebin.com", "streamdatabase.com")
 
 
 # Канал стримера на Twitch (НЕ директория): https://www.twitch.tv/ibai

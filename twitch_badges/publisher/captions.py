@@ -196,6 +196,10 @@ def watch_target(r):
         return ("category", game, href)
     tl = w.get("twitch_link")
     url = str(tl.get("url") or "") if tl else ""
+    # Ссылка на сам источник (streamdatabase.com) — не «куда идти»: она могла
+    # попасть в снапшот до фильтра в extract_link_from_text.
+    if "streamdatabase.com" in url:
+        url = ""
     if url.startswith("https://"):
         if "/directory/event/" in url:
             return ("event", tl.get("label") or "на Twitch", url)

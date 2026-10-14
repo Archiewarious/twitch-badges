@@ -56,3 +56,13 @@ def test_unlock_step_is_prerequisite_stage():
     assert "3 разных дня" in text and "gengar" not in text
     assert cost_from_steps(steps, None) == "free"
     assert _problems(steps) == []
+
+
+def test_streamdatabase_link_is_not_a_watch_target():
+    from twitch_badges.publisher.captions import watch_target
+    from twitch_badges.sources.sd_parse import extract_link_from_text
+    text = "This badge is the evolution of the [Pichu](https://www.streamdatabase.com/twitch/global-badges/pichu/1) badge."
+    assert extract_link_from_text(text) is None
+    r = {"window": {"twitch_link": {"label": "Pichu",
+                                    "url": "https://www.streamdatabase.com/twitch/global-badges/pichu/1"}}}
+    assert watch_target(r) == (None, None, None)
