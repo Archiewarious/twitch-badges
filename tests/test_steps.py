@@ -66,3 +66,50 @@ def test_streamdatabase_link_is_not_a_watch_target():
     r = {"window": {"twitch_link": {"label": "Pichu",
                                     "url": "https://www.streamdatabase.com/twitch/global-badges/pichu/1"}}}
     assert watch_target(r) == (None, None, None)
+
+
+# ── сроки внутри шагов (стартовые покемоны, 20.10.2026) ──
+
+from datetime import datetime, timezone  # noqa: E402
+
+from twitch_badges.domain.conditions import entry_deadline  # noqa: E402
+
+BULBASAUR = [[{"type": "twitch_subscription", "tier": 1, "amount": 1},
+              {"type": "twitch_gift_subscription", "tier": 1, "amount": 1}],
+             [{"type": "twitch_watch", "minutes": 20, "days": None,
+               "end_at_date": "2026-10-01", "end_at_time": "07:00"}],
+             [{"type": "twitch_watch", "minutes": 20, "days": 2}]]
+UTC = timezone.utc
+
+
+def test_entry_deadline_is_earliest_closed_stage():
+    assert entry_deadline(BULBASAUR) == datetime(2026, 10, 1, 7, 0, tzinfo=UTC)
+    assert entry_deadline(NEW) is None
+    # срок лишь у одной из альтернатив — этап не закрыт: можно пройти другой
+    alt = [[{"type": "twitch_watch", "minutes": 20, "end_at_date": "2026-10-01"},
+            {"type": "twitch_subscription", "tier": 1, "amount": 1}]]
+    assert entry_deadline(alt) is None
+
+
+def test_closed_entry_is_hidden_with_reason():
+    from twitch_badges import monitors
+    from twitch_badges.publisher.captions import is_shown
+    now = datetime(2026, 10, 20, 12, tzinfo=UTC)
+    r = {"set_id": "bulbasaur", "status": "active", "group": None,
+         "window": {"start": datetime(2026, 8, 24, tzinfo=UTC),
+                    "end": datetime(2026, 11, 1, 6, tzinfo=UTC),
+                    "entry_until": entry_deadline(BULBASAUR)}}
+    assert not is_shown(r, now)
+    assert "вход закрыт" in monitors.hidden_reason(r)
+    assert is_shown(r, datetime(2026, 9, 20, tzinfo=UTC))      # до срока — показываем
+
+
+def test_old_badge_with_live_catalog_window_is_scanned():
+    from twitch_badges.sources.sd_parse import pages_to_scan
+    now = datetime(2026, 10, 20, 12, tzinfo=UTC)
+    old = {"current": {"set_id": "pichu"}, "added": True, "added_at": "2026-08-17T16:05:41.845Z",
+           "start_at_date": "2026-08-24", "start_at_time": "17:00",
+           "end_at_date": "2026-11-01", "end_at_time": "07:00"}
+    ended = dict(old, current={"set_id": "gone"}, end_at_date="2026-10-01")
+    scan = pages_to_scan([], [old, ended], now)
+    assert "pichu" in scan and "gone" not in scan

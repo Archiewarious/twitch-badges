@@ -13,6 +13,7 @@ from ..timeutil import parse_dt
 from .catalog import MANUAL_SET_IDS, HEURISTIC_MAX_AGE_DAYS, badge_added_dt, catalog_window_fields, group_key
 from .categories import _category_box_art, _category_name, category_href, category_names, category_url_for
 from .conditions import (PAGE_KIND_COST, PAGE_KIND_RU, _condition_from_content, av_objectives,
+                         entry_deadline,
                          condition_from_helix, cost_from_steps, describe_condition_ru)
 from .descriptions import category_from_description, channel_from_description, pick_twitch_link
 from .text import _content_ngrams, _norm_alnum, ru_duration_minutes
@@ -78,6 +79,7 @@ def collect_windows_by_set_id(cx, events, twitch_links=None):
                     # StreamDatabase — для каналовых бейджей без categories (EWC и т.п.).
                     "twitch_link": pick_twitch_link(twitch_links.get(set_id), av),
                     "channel_count": channel_count,
+                    "entry_until": entry_deadline(av_objectives(av)),
                 })
     return windows
 
@@ -340,6 +342,7 @@ def add_catalog_windows(cx, windows, badges, page_info=None, twitch_links=None):
                 "game": _category_name(av.get("categories")),
                 "twitch_link": pick_twitch_link((twitch_links or {}).get(set_id), av),
                 "channel_count": av.get("channel_count", 0),
+                "entry_until": entry_deadline(av_objectives(av)),
                 "offline_event": bool(av.get("twitchcon")),
                 "dates_coarse": not (av.get("start_at_time") or av.get("end_at_time")),
             }]
@@ -377,6 +380,7 @@ def add_page_availability_windows(cx, windows, page_avail, twitch_links=None):
                 "categories": category_names(cats),
                 "twitch_link": pick_twitch_link((twitch_links or {}).get(set_id), av),
                 "channel_count": len(av.get("channels") or []),
+                "entry_until": entry_deadline(av_objectives(av)),
                 "offline_event": bool(av.get("twitchcon")),
                 "dates_coarse": not (av.get("start_at_time") or av.get("end_at_time")),
                 "from_page_availability": True,

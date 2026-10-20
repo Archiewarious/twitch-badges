@@ -5,6 +5,8 @@
 import re
 from datetime import datetime, timedelta, timezone
 
+from ..timeutil import parse_dt
+
 def find_badge_list(obj):
     if isinstance(obj, list) and obj and isinstance(obj[0], dict):
         if "current" in obj[0]:
@@ -301,6 +303,15 @@ def pages_to_scan(events, badges, now) -> dict:
     for badge in badges:
         sid = badge.get("current", {}).get("set_id")
         if not sid or sid in in_events_with_avail or not badge.get("added"):
+            continue
+        # Кампания идёт (или впереди) по датам каталога — страницу читаем при
+        # любом возрасте значка: условие SD держит только там. Стартовых
+        # покемонов (заведены 17.08) продлили до 1 ноября, а мы не смотрели их
+        # страницы, и пост вышел с «Условия уточняются».
+        end = parse_dt(badge.get("end_at_date"), badge.get("end_at_time"))
+        start = parse_dt(badge.get("start_at_date"), badge.get("start_at_time"))
+        if (end and end >= now) or (start and start >= now):
+            need[sid] = page_parse_args(badge)
             continue
         ts = _badge_added_at(badge)
         if not ts:

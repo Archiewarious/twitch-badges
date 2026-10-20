@@ -1,6 +1,7 @@
 """Условия получения и цена: из структурных полей SD, текста и описаний Twitch."""
 import re
 
+from ..timeutil import parse_dt
 from .text import plural, ru_duration_minutes, tier_ru, _subs_ru
 
 # 11.10.2026 SD переименовал типы шагов и их поля: watch → twitch_watch
@@ -84,6 +85,24 @@ def cost_from_steps(steps, fallback):
     if not types:
         return fallback
     return "paid" if types & PAID_STEP_TYPES else "free"
+
+
+def entry_deadline(steps):
+    """До какого момента в кампанию ещё можно ВОЙТИ: самый ранний срок этапа, у
+    которого срок стоит у каждой альтернативы. Этапы обязательны по порядку, и
+    если один закрылся, новичок значок уже не соберёт.
+
+    Стартовые покемоны (20.10.2026): кампанию продлили до 1 ноября, но первый
+    просмотр требовался до 1 октября (end_at_date прямо в шаге), а Great Ball
+    больше не продают. Без этого бот писал «Продлили — ещё можно получить!»."""
+    deadline = None
+    for stage in steps or []:
+        ends = [parse_dt((st or {}).get("end_at_date"), (st or {}).get("end_at_time"))
+                for st in stage or []]
+        if ends and all(ends):
+            d = max(ends)
+            deadline = d if deadline is None else min(deadline, d)
+    return deadline
 
 
 def describe_steps_ru(steps):

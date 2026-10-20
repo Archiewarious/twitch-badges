@@ -63,6 +63,10 @@ def is_shown(r, now):
     w = r.get("window") or {}
     if w.get("offline_event"):
         return False
+    # Вход закрыт: обязательный этап условия просрочен — новичок значок не
+    # получит, хотя окно кампании ещё открыто (покемоны-стартеры, 20.10.2026).
+    if w.get("entry_until") and now > w["entry_until"]:
+        return False
     # Слишком далёкий анонс — не новость (FFXIV JP стартует через 99 дней).
     # Появится в боте, когда приблизится. Сайт-каталог горизонт не применяет.
     if r["status"] == "upcoming" and w.get("start"):

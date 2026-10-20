@@ -81,6 +81,8 @@ def hidden_reason(r):
         return "офлайн-мероприятие"
     if w.get("too_late"):
         return "добавлен уже после окончания"
+    if w.get("entry_until") and r["status"] == "active":
+        return "вход закрыт: обязательный этап условия просрочен"
     if r["status"] == "upcoming" and w.get("start"):
         return "анонс за горизонтом"
     if r.get("note_kind") == "cancelled":
