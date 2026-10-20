@@ -20,6 +20,13 @@ from .text import _content_ngrams, _norm_alnum, ru_duration_minutes
 
 log = logging.getLogger(__name__)
 
+def _entry_until(av):
+    """{"entry_until": срок} — только если у условия есть просроченный-или-будущий
+    обязательный этап (см. entry_deadline); иначе ключа нет, окна прежние."""
+    d = entry_deadline(av_objectives(av))
+    return {"entry_until": d} if d else {}
+
+
 def collect_windows_by_set_id(cx, events, twitch_links=None):
     twitch_links = twitch_links or {}
     # Сначала собираем все availability._id по кампании (group), чтобы каждое окно
@@ -79,7 +86,7 @@ def collect_windows_by_set_id(cx, events, twitch_links=None):
                     # StreamDatabase — для каналовых бейджей без categories (EWC и т.п.).
                     "twitch_link": pick_twitch_link(twitch_links.get(set_id), av),
                     "channel_count": channel_count,
-                    "entry_until": entry_deadline(av_objectives(av)),
+                    **_entry_until(av),
                 })
     return windows
 
@@ -342,7 +349,7 @@ def add_catalog_windows(cx, windows, badges, page_info=None, twitch_links=None):
                 "game": _category_name(av.get("categories")),
                 "twitch_link": pick_twitch_link((twitch_links or {}).get(set_id), av),
                 "channel_count": av.get("channel_count", 0),
-                "entry_until": entry_deadline(av_objectives(av)),
+                **_entry_until(av),
                 "offline_event": bool(av.get("twitchcon")),
                 "dates_coarse": not (av.get("start_at_time") or av.get("end_at_time")),
             }]
@@ -380,7 +387,7 @@ def add_page_availability_windows(cx, windows, page_avail, twitch_links=None):
                 "categories": category_names(cats),
                 "twitch_link": pick_twitch_link((twitch_links or {}).get(set_id), av),
                 "channel_count": len(av.get("channels") or []),
-                "entry_until": entry_deadline(av_objectives(av)),
+                **_entry_until(av),
                 "offline_event": bool(av.get("twitchcon")),
                 "dates_coarse": not (av.get("start_at_time") or av.get("end_at_time")),
                 "from_page_availability": True,
