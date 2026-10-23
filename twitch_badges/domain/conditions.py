@@ -58,7 +58,13 @@ def _step_ru(step):
         amount = step.get("bits_amount")
         return f"потратить {amount} Bits" if amount and amount > 1 else "потратить Bits"
     if t == "clip":
-        return "создать клип"
+        return "создать клип и поделиться им" if step.get("share") else "создать клип"
+    if t == "stream":
+        # twitch_stream (23.10.2026): значок для стримеров — провести трансляцию.
+        mins = step.get("minutes") or step.get("stream_minutes")
+        return f"провести стрим {ru_duration_minutes(mins)}" if mins else "провести стрим"
+    if t == "dj_program":
+        return "состоять в DJ-программе Twitch"
     if t == "turbo":
         return "оформить подписку Turbo"
     if t == "unlock":

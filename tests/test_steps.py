@@ -113,3 +113,14 @@ def test_old_badge_with_live_catalog_window_is_scanned():
     ended = dict(old, current={"set_id": "gone"}, end_at_date="2026-10-01")
     scan = pages_to_scan([], [old, ended], now)
     assert "pichu" in scan and "gone" not in scan
+
+
+def test_streamer_steps():
+    """Clipped That (23.10.2026): twitch_dj_program → twitch_stream → twitch_clip(share)."""
+    steps = [[{"type": "twitch_dj_program"}], [{"minutes": None, "type": "twitch_stream"}],
+             [{"download": None, "export": None, "self": True, "share": True, "type": "twitch_clip"}]]
+    assert describe_steps_ru(steps) == ("Состоять в DJ-программе Twitch, затем провести стрим, "
+                                        "затем создать клип и поделиться им")
+    assert describe_steps_ru([[{"type": "twitch_stream", "minutes": 60}]]) == "Провести стрим 1 час"
+    assert cost_from_steps(steps, None) == "free"
+    assert _problems(steps) == []
