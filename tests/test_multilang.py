@@ -159,3 +159,12 @@ def test_old_db_gets_channel_column(tmp_path, env):
     conn = db.open_db(e.path)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(outbox)")}
     assert "ch" in cols
+
+
+def test_no_double_article():
+    r = {"title": "Wolf Medallion", "status": "active", "cost": "paid", "condition": "Подписка или гифт",
+         "window": {"game": "The Witcher 3: Wild Hunt",
+                    "category_href": "https://www.twitch.tv/directory/category/the-witcher-3-wild-hunt"}}
+    cap = fit_channel_caption("ending", r, {}, loc=EN)
+    assert "the The" not in re.sub(r"<[^>]+>", "", cap)
+    assert "to any streamer in The Witcher 3: Wild Hunt category" in re.sub(r"<[^>]+>", "", cap)

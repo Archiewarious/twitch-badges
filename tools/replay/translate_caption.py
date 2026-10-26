@@ -364,4 +364,7 @@ def translate(caption_html, lang, tz, tz_label, msg_dt, channel_url, channel_han
             out.append(t["art"].format(y=m[1]))
             continue
         out.append(s)                     # имя значка, «• Имя» и т.п. — как есть
-    return "\n".join(out).strip()
+    text = "\n".join(out).strip()
+    if lang == "en":
+        text = re.sub(r"\bthe (<a [^>]+>)?(?=The )", r"\1", text)
+    return text

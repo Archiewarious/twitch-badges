@@ -469,6 +469,14 @@ def how_text(r, urls=None, loc: Locale = RU):
 
 def _how_text_l10n(r, urls, loc: Locale):
     """how_text для не-русских каналов: та же логика, условие уже переведено."""
+    out = _how_text_l10n_raw(r, urls, loc)
+    if loc.lang == "en":
+        # «in the The Witcher 3 category» → «in The Witcher 3 category»
+        out = re.sub(r"\bthe (<a [^>]+>)?(?=The )", r"\1", out)
+    return out
+
+
+def _how_text_l10n_raw(r, urls, loc: Locale):
     t = TXT[loc.lang]
     cond = r.get("condition") or ""
     kind, label, url = watch_target(r, loc)
