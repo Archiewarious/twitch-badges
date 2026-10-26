@@ -320,7 +320,15 @@ class BotApp:
         cm = update.my_chat_member
         if not cm or cm.chat.type != ChatType.CHANNEL:
             return
-        if str(cm.chat.id) == str(self.cfg.channel_id) or self.cfg.storage_chat_id:
+        if self.cfg.storage_chat_id:
+            return
+        # Каналы публикации (русский и на других языках) служебными не бывают:
+        # 26.10.2026 испанский канал, куда владелец добавил бота админом, был
+        # запомнен служебным — туда ушли бы карточки и бэкапы БД. Публичный
+        # канал (есть @адрес) тоже не служебный: служебный — закрытый.
+        publish_ids = {str(cid) for _, cid in self.cfg.channels} | {str(self.cfg.channel_id)}
+        if str(cm.chat.id) in publish_ids or getattr(cm.chat, "username", None):
+            log.info("канал %s — канал публикации или публичный, служебным не считаю", cm.chat.id)
             return
         if cm.new_chat_member.status != ChatMemberStatus.ADMINISTRATOR:
             return

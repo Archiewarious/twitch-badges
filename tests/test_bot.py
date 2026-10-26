@@ -145,9 +145,9 @@ def test_private_owner_and_stranger(setup):
 def test_storage_channel_remembered(setup):
     tg, cfg, conn, b, app = setup
 
-    def upd(from_id):
+    def upd(from_id, chat=None):
         return Update.de_json({"update_id": 3, "my_chat_member": {
-            "chat": {"id": -1009, "type": "channel", "title": "Склад"},
+            "chat": chat or {"id": -1009, "type": "channel", "title": "Склад"},
             "from": {"id": from_id, "is_bot": False, "first_name": "o"}, "date": int(T0.timestamp()),
             "old_chat_member": {"status": "left", "user": {"id": 123456, "is_bot": True, "first_name": "b"}},
             "new_chat_member": {"status": "administrator", "user": {"id": 123456, "is_bot": True, "first_name": "b"},
@@ -164,6 +164,11 @@ def test_storage_channel_remembered(setup):
     async def scenario():
         await app.initialize()
         await b.on_my_chat_member(upd(999), Ctx)            # не владелец
+        assert db.kv_get(conn, "channel", "storage_chat_id") is None
+        # 26.10.2026: публичный канал на другом языке — не служебный
+        await b.on_my_chat_member(upd(tg.owner_id, {"id": -1008, "type": "channel",
+                                                    "title": "Twitch Drops Español",
+                                                    "username": "TwitchDropsES"}), Ctx)
         assert db.kv_get(conn, "channel", "storage_chat_id") is None
         await b.on_my_chat_member(upd(tg.owner_id), Ctx)
         await app.shutdown()
