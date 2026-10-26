@@ -96,7 +96,8 @@ def apply_signal(conn, sig, now=None):
 
 
 def render(key, subject, body, *, repeat=False, since=None) -> str:
-    k = CATALOG.get(key, DEFAULT_KIND)
+    # «post-failed:en» — та же тревога для канала на другом языке.
+    k = CATALOG.get(key) or CATALOG.get(key.split(":", 1)[0], DEFAULT_KIND)
     head = "🔁 Всё ещё: " if repeat else "🔴 "
     lines = [f"{head}<b>{html.escape(subject)}</b>"]
     if body:

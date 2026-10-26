@@ -109,7 +109,8 @@ def cmd_collect(args, cfg):
         try:
             res = run_once(conn, make_sources(cfg, http, conn), now=db.utcnow(),
                            images_dir=cfg.images_dir, cards_dir=cfg.cards_dir,
-                           overrides_path=cfg.overrides_file, force=args.force)
+                           overrides_path=cfg.overrides_file, force=args.force,
+                           card_locales=cfg.card_locales)
         finally:
             http.close()
         print(json.dumps({"action": res.action, "reason": res.reason}, ensure_ascii=False))

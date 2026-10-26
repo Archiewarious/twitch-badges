@@ -49,6 +49,7 @@ EXACT_KINDS = {STARTED, ENDING, ACTIVE_SHORT}
 class PlanConfig:
     quiet_start: int = 0            # тихие часы МСК; start == end — выключены
     quiet_end: int = 0
+    quiet_tz: str = "Europe/Moscow"  # пояс канала: у английского — Нью-Йорк, у испанского — Мехико
     fresh_hours: float = 6          # анонсы, «как получить», «уточнили время»
     exact_hours: float = 48         # «стартовало» и «последний день» по точным датам
     max_groups: int = 5             # больше групп в очереди — алерт burst
@@ -129,16 +130,32 @@ def _parse(s):
 
 
 def in_quiet_hours(now, cfg: PlanConfig) -> bool:
-    return quiet_hours(now, cfg.quiet_start, cfg.quiet_end)
+    return quiet_hours(now, cfg.quiet_start, cfg.quiet_end, cfg.quiet_tz)
 
 
-def night_hold(kind, item) -> bool:
+URGENT_FRESH_HOURS = 24      # «только появился» — значок на Twitch не дольше суток
+
+
+def night_hold(kind, item, now=None) -> bool:
     """Тихие часы: ночью проходит ТОЛЬКО «значок появился и уже идёт» (новая
     кампания, анонса ещё не было). Всё остальное — «скоро», «стартовало»,
     уточнения, «последний день» — ждёт утра. Раньше «скоро» со стартом ближе
     суток считался срочным, и анонс Castlevania ушёл в 08:48 МСК (15.10.2026);
-    владелец: «с 23 до 9 утра не должно быть никаких сообщений»."""
-    return not (kind in (APPEARED_ACTIVE, ACTIVE_SHORT) and "announce" in item.stages)
+    владелец: «с 23 до 9 утра не должно быть никаких сообщений».
+
+    «Появился» — значок на Twitch не дольше суток. Иначе новый канал (английский,
+    испанский, 27.10.2026) ночью выложил бы все давно идущие раздачи: для него
+    каждая — «новая и уже идёт»."""
+    if not (kind in (APPEARED_ACTIVE, ACTIVE_SHORT) and "announce" in item.stages):
+        return True
+    seen = (item.record or {}).get("first_seen")
+    if not seen or now is None:
+        return True
+    try:
+        seen_dt = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return (now - seen_dt).total_seconds() > URGENT_FRESH_HOURS * 3600
 
 
 def live_records(records, now) -> dict:
@@ -313,7 +330,7 @@ def plan(records, campaigns: dict, aliases: dict, *, now: datetime, data_at: dat
     night = in_quiet_hours(now, cfg)
     ready = []
     for kind, item in announce:
-        if night and night_hold(kind, item):
+        if night and night_hold(kind, item, now):
             res.held.append((item.campaign_id, kind, "тихие часы"))
         else:
             ready.append((kind, item))

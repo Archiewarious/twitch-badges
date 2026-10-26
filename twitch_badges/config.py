@@ -36,6 +36,9 @@ class Config:
     data_dir: Path
     bot_token: str = ""
     channel_id: str = ""
+    # Каналы на других языках (27.10.2026): {"en": chat_id, "es": chat_id}.
+    # Пусто — канал выключен. Русский — channel_id, как раньше.
+    extra_channels: tuple = ()
     storage_chat_id: str = ""
     alert_chat_id: str = ""
     alert_bot_token: str = ""
@@ -50,6 +53,19 @@ class Config:
     faults: frozenset = frozenset()
     overrides_file: Path = Path(__file__).resolve().parent.parent / "manual" / "overrides.json"
     ignore_file: Path = Path(__file__).resolve().parent.parent / "manual" / "ignore.txt"
+
+    @property
+    def channels(self) -> list:
+        """[(Locale, chat_id)] всех включённых каналов, русский первым."""
+        from .publisher.locale import LOCALES, RU
+        out = [(RU, self.channel_id)] if self.channel_id else []
+        out += [(LOCALES[ch], cid) for ch, cid in self.extra_channels if ch in LOCALES and cid]
+        return out
+
+    @property
+    def card_locales(self) -> tuple:
+        """Языки карточек: None — русская (прежнее имя файла), плюс включённые каналы."""
+        return (None, *[loc for loc, _ in self.channels if loc.lang != "ru"])
 
     @property
     def db_path(self) -> Path:
@@ -82,6 +98,9 @@ def load(env: dict | None = None, env_file: Path | None = None) -> Config:
         data_dir=Path(g("DATA_DIR") or "data-tb").resolve(),
         bot_token=g("TELEGRAM_BOT_TOKEN", ""),
         channel_id=(g("TELEGRAM_CHANNEL_ID") or "").strip(),
+        extra_channels=tuple((ch, (g(f"TELEGRAM_CHANNEL_{ch.upper()}") or "").strip())
+                             for ch in ("en", "es")
+                             if (g(f"TELEGRAM_CHANNEL_{ch.upper()}") or "").strip()),
         storage_chat_id=(g("TELEGRAM_STORAGE_CHAT_ID") or "").strip(),
         alert_chat_id=(g("ALERT_CHAT_ID") or "").strip(),
         alert_bot_token=g("ALERT_BOT_TOKEN", ""),

@@ -39,7 +39,8 @@ CREATE TABLE outbox(
   knowledge TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('pending','sending','sent','unknown','retry','failed')),
   attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, sending_at TEXT, sent_at TEXT,
-  message_ids TEXT, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  message_ids TEXT, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  ch TEXT NOT NULL DEFAULT 'ru');
 
 CREATE TABLE stages(
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
@@ -140,12 +141,25 @@ def open_db(path: Path, check: bool = True) -> sqlite3.Connection:
     if ver != str(SCHEMA_VERSION):
         conn.close()
         raise DbError(f"БД {path}: версия схемы {ver!r}, код ждёт {SCHEMA_VERSION}")
+    ensure_columns(conn)
     if check:
         problems = integrity(conn, quick=True)
         if problems:
             conn.close()
             raise DbError(f"БД {path} повреждена: {'; '.join(problems[:5])}")
     return conn
+
+
+def ensure_columns(conn):
+    """Аддитивные изменения схемы v1 (старый код их не замечает и не ломается):
+    outbox.ch — канал строки (27.10.2026: каналы на английском и испанском).
+    Внимание при откате кода: старая версия не знает ch и отправила бы
+    неотправленные строки чужих каналов в русский — перед откатом их гасим
+    (README, «Откат»)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(outbox)")}
+    if "ch" not in cols:
+        conn.execute("ALTER TABLE outbox ADD COLUMN ch TEXT NOT NULL DEFAULT 'ru'")
+        conn.commit()
 
 
 def integrity(conn, quick: bool = False) -> list[str]:

@@ -304,6 +304,18 @@ def test_quiet_hours_let_through_appeared_and_running():
     assert heads(sim.tick()) == [(P.APPEARED_ACTIVE, ("test-now",))]
 
 
+def test_quiet_hours_hold_old_campaign_new_to_channel():
+    """Новый канал (27.10.2026): давно идущая раздача для него «новая и уже идёт»,
+    но это не срочно — ночью ждёт утра."""
+    cfg = P.PlanConfig(quiet_start=23, quiet_end=9)
+    night = T0.replace(hour=22)                    # 01:00 МСК
+    sim = sim_with(lambda s: m.new_badge(s, "test-old", "Test Old", start=night - m.days(5),
+                                         end=night + m.days(9), added_at=night - m.days(6)),
+                   now=night, cfg=cfg)
+    assert sim.tick() == []
+    assert ("test-old", P.APPEARED_ACTIVE, "тихие часы") in sim.results[-1].held
+
+
 # ── чистка ──
 
 def test_cleanup_after_30_days_not_live():

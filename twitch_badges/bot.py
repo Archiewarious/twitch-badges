@@ -54,6 +54,7 @@ class BotApp:
         self.cfg, self.conn = cfg, conn
         self.app = None
         self.outbox = self.media = None
+        self.extra_outboxes = []        # [(Locale, Outbox)] — каналы на других языках
         self.alert_bot = None
         self._records_key = None
         self._records = None
@@ -123,6 +124,13 @@ class BotApp:
                 os._exit(9)
             self.outbox._part_done = die
         self.outbox.recover()
+        for loc, chat_id in cfg.channels:
+            if loc.lang == "ru":
+                continue
+            ob = Outbox(self.conn, app.bot, channel_id=chat_id, storage_chat_id=up,
+                        media_for=self.media.media_for, alert=self.alert, loc=loc)
+            ob.recover()
+            self.extra_outboxes.append((loc, ob))
         if cfg.channel_id:
             try:
                 chat = await app.bot.get_chat(cfg.channel_id)
@@ -174,10 +182,15 @@ class BotApp:
         now = db.utcnow()
         try:
             recs, _ = self.records()
-            keys = [card_key(r) for r in recs if is_shown(r, now)]
+            shown = [r for r in recs if is_shown(r, now)]
+            keys = [card_key(r) for r in shown]
+            for loc, _ in self.extra_outboxes:
+                keys += [card_key(r, loc) for r in shown]
             up, delete_after = self.upload_chat()
             if up:
                 self.media.storage_chat_id = self.outbox.storage_chat_id = up
+                for _, ob in self.extra_outboxes:
+                    ob.storage_chat_id = up
                 self.media.delete_after_upload = delete_after
                 await self.media.ensure([k for k in keys if k][:MEDIA_PER_RUN])
             if not (cfg.channel_id and cfg.publish_enabled):
@@ -186,6 +199,18 @@ class BotApp:
                        has_art=art_checker(cfg.images_dir),
                        cfg=planner.PlanConfig(quiet_start=cfg.quiet_start, quiet_end=cfg.quiet_end),
                        media=self.media)
+            # Каналы на других языках: те же записи, свой план, свои тихие часы
+            # по местному времени канала. Сбой одного не мешает остальным.
+            for loc, ob in self.extra_outboxes:
+                try:
+                    await tick(self.conn, ob, now=now, has_art=art_checker(cfg.images_dir),
+                               cfg=planner.PlanConfig(quiet_start=cfg.quiet_start,
+                                                      quiet_end=cfg.quiet_end, quiet_tz=loc.tz),
+                               media=self.media)
+                except db.DbError:
+                    raise
+                except Exception:
+                    log.exception("тик публикации канала %s упал", loc.ch)
         except db.DbError as e:
             log.error("БД: %s", e)
         except Exception:

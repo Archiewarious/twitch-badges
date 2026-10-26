@@ -252,7 +252,7 @@ def _helix(conn, src, prev, now, cfg, stats):
 
 def run_once(conn, src: Sources, *, now: datetime, images_dir: Path, cards_dir: Path,
              overrides_path: Path | None = None, cfg: CollectorConfig = CollectorConfig(),
-             force: bool = False) -> RunResult:
+             force: bool = False, card_locales=(None,)) -> RunResult:
     st = _state(conn)
     if not force and st.get("next_try_at") and now < datetime.fromisoformat(st["next_try_at"]):
         return RunResult("skip-backoff", f"пауза после ошибок до {st['next_try_at']}")
@@ -317,7 +317,8 @@ def run_once(conn, src: Sources, *, now: datetime, images_dir: Path, cards_dir: 
         cutoff = (now - cfg.known_windows_keep).strftime("%Y-%m-%dT%H:%M")
         known = {k: v for k, v in known.items() if (v.get("end") or v.get("start") or "") >= cutoff}
         stats["images"] = sync_images(built.records, images_dir, src.fetch_image)
-        stats["cards"] = {k: v for k, v in sync_cards(built.records, images_dir, cards_dir).items()
+        stats["cards"] = {k: v for k, v in sync_cards(built.records, images_dir, cards_dir,
+                                                         card_locales).items()
                           if k != "cards"}
 
         with db.tx(conn):

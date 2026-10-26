@@ -97,7 +97,7 @@ def soft_glow_bg(base_col, glow_col):
     return Image.composite(Image.new("RGB", (W, H), glow_col), base, mask)
 
 
-def render_card(r, images_dir: Path) -> bytes:
+def render_card(r, images_dir: Path, loc=None) -> bytes:
     """Значок как app-icon по центру. Фон автоматически строится в тон значку
     (доминирующий цвет), цвет чипа — под яркость значка. Без ИИ."""
     # Сверху название, снизу плашка цены — карточка должна объяснять себя сама:
@@ -155,7 +155,7 @@ def render_card(r, images_dir: Path) -> bytes:
         draw_title_text(d, r.get("title") or "", chip_x, chip_y, chip_s, chip)
 
     draw_card_title(d, r.get("title") or "")
-    draw_cost_pill(d, r.get("cost"), chip_y + chip_s + 42)
+    draw_cost_pill(d, r.get("cost"), chip_y + chip_s + 42, loc)
     buf = io.BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()
@@ -218,10 +218,12 @@ def draw_card_title(d, title):
 COST_PILL = {"free": ("БЕСПЛАТНО", (46, 160, 90)), "paid": ("ПЛАТНО", (214, 120, 40))}
 
 
-def draw_cost_pill(d, cost, cy):
+def draw_cost_pill(d, cost, cy, loc=None):
     if cost not in COST_PILL:
         return
     text, color = COST_PILL[cost]
+    if loc is not None and loc.lang != "ru":
+        text = loc.card_pill[cost]
     font = _font(26)
     tw = d.textlength(text, font=font)
     pw, ph = tw + 56, 48
@@ -267,8 +269,13 @@ def media_shown(r):
     return r["status"] in ("active", "upcoming") and r.get("group") != "__permanent__"
 
 
-def card_key(r):
-    return r.get("card_key") or image_cache_key(r.get("image") or "")
+def card_key(r, loc=None):
+    """Ключ (и имя файла) карточки. У русских — прежний, у других языков —
+    с суффиксом: на карточке плашка цены на языке канала."""
+    key = r.get("card_key") or image_cache_key(r.get("image") or "")
+    if key and loc is not None and loc.lang != "ru":
+        return f"{key}.{loc.ch}"
+    return key
 
 
 def sha256_file(path: Path):
@@ -292,24 +299,25 @@ def atomic_write(path: Path, data: bytes):
         raise
 
 
-def sync_cards(records, images_dir: Path, cards_dir: Path) -> dict:
+def sync_cards(records, images_dir: Path, cards_dir: Path, locales=(None,)) -> dict:
     """Карточки актуальных значков: пишем только изменённые, лишние удаляем.
-    Возвращает {card_key: sha256}."""
+    locales — языки каналов (None — русский). Возвращает {card_key: sha256}."""
     cards_dir = Path(cards_dir)
     wanted, written = {}, 0
     for r in records:
         if not media_shown(r):
             continue
-        key = card_key(r)
-        if not key:
-            continue
-        data = render_card(r, images_dir)
-        sha = hashlib.sha256(data).hexdigest()
-        path = cards_dir / f"{key}.png"
-        if sha256_file(path) != sha:
-            atomic_write(path, data)
-            written += 1
-        wanted[key] = sha
+        for loc in locales:
+            key = card_key(r, loc)
+            if not key:
+                continue
+            data = render_card(r, images_dir, loc)
+            sha = hashlib.sha256(data).hexdigest()
+            path = cards_dir / f"{key}.png"
+            if sha256_file(path) != sha:
+                atomic_write(path, data)
+                written += 1
+            wanted[key] = sha
     shown = [r for r in records if media_shown(r) and r.get("image")]
     if shown and not wanted:
         raise RuntimeError(f"ни у одного из {len(shown)} показываемых значков не распознан UUID "

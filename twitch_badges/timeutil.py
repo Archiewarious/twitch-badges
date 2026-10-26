@@ -33,11 +33,16 @@ def effective_end(w):
     return e
 
 
-def in_quiet_hours(now, start, end) -> bool:
-    """Тихие часы по МСК (UTC+3): [start, end), через полночь тоже. start == end — выключены."""
+def in_quiet_hours(now, start, end, tz: str | None = None) -> bool:
+    """Тихие часы [start, end) по МСК (UTC+3) или по поясу tz (каналы на других
+    языках: Нью-Йорк, Мехико); через полночь тоже. start == end — выключены."""
     if start == end:
         return False
-    h = (now + timedelta(hours=3)).hour
+    if tz and tz != "Europe/Moscow":
+        from zoneinfo import ZoneInfo
+        h = now.astimezone(ZoneInfo(tz)).hour
+    else:
+        h = (now + timedelta(hours=3)).hour
     if start < end:
         return start <= h < end
     return h >= start or h < end

@@ -39,6 +39,7 @@ from ..domain.catalog import image_cache_key
 from ..media import MediaNotReady
 from .captions import CAPTION_LIMIT, album_caption, channel_buttons, fit_album_caption, \
     fit_channel_caption, tg_len
+from .locale import RU, Locale
 from .planner import ENDING, AlertSignal, Intent
 
 log = logging.getLogger(__name__)
@@ -55,12 +56,15 @@ RECONCILE_SLACK = 120           # с: часы Telegram и наши могут �
 
 # ── превращение намерения в пост ──
 
-def card_key(r):
-    """Ключ карточки значка (как у render_cards): card_key или uuid картинки."""
-    return r.get("card_key") or image_cache_key(r.get("image") or "")
+def card_key(r, loc=None):
+    """Ключ карточки значка (как у cards.card_key): с суффиксом языка у не-русских."""
+    key = r.get("card_key") or image_cache_key(r.get("image") or "")
+    if key and loc is not None and loc.lang != "ru":
+        return f"{key}.{loc.ch}"
+    return key
 
 
-def render(intent: Intent, urls: dict) -> dict:
+def render(intent: Intent, urls: dict, loc: Locale = RU) -> dict:
     """Intent → payload: части поста с готовыми подписями и медиа.
     Логика та же, что у старых post_badge/post_album: одиночный пост — фото с
     кнопками; группа — альбом(ы) по ≤10 и подпись ≤1024 (альбом без кнопок)."""
@@ -68,21 +72,21 @@ def render(intent: Intent, urls: dict) -> dict:
     parts = []
     if len(items) == 1:
         cid, r = items[0]
-        parts.append({"type": "photo", "media": [card_key(r)], "campaigns": [cid],
-                      "caption": fit_channel_caption(intent.kind, r, urls),
-                      "buttons": channel_buttons(r)})
+        parts.append({"type": "photo", "media": [card_key(r, loc)], "campaigns": [cid],
+                      "caption": fit_channel_caption(intent.kind, r, urls, loc=loc),
+                      "buttons": channel_buttons(r, loc)})
     else:
         i = 0
         group = None if intent.kind == ENDING else intent.group
         while i < len(items):
             n = min(10, len(items) - i)
-            while n > 1 and tg_len(album_caption(items[i:i + n], intent.kind, group, urls)) > CAPTION_LIMIT:
+            while n > 1 and tg_len(album_caption(items[i:i + n], intent.kind, group, urls, loc)) > CAPTION_LIMIT:
                 n -= 1
             chunk, i = items[i:i + n], i + n
             parts.append({"type": "photo" if n == 1 else "album",
-                          "media": [card_key(r) for _, r in chunk],
+                          "media": [card_key(r, loc) for _, r in chunk],
                           "campaigns": [c for c, _ in chunk],
-                          "caption": fit_album_caption(chunk, intent.kind, group, urls),
+                          "caption": fit_album_caption(chunk, intent.kind, group, urls, loc=loc),
                           "buttons": None})
     return {"kind": intent.kind, "group": intent.group, "parts": parts, "done": {},
             "items": [{"campaign_id": it.campaign_id, "set_id": it.record["set_id"],
@@ -146,8 +150,10 @@ class Outbox:
     """Исполнитель outbox на одной БД и одном telegram.Bot."""
 
     def __init__(self, conn, bot, *, channel_id, storage_chat_id=None, media_for=None,
-                 alert=None, sleep=asyncio.sleep, clock=db.utcnow):
+                 alert=None, sleep=asyncio.sleep, clock=db.utcnow, loc: Locale = RU):
         self.conn, self.bot = conn, bot
+        # Канал этой очереди: строки outbox помечены ch, id кампаний — префиксом loc.
+        self.loc, self.ch = loc, loc.ch
         self.channel_id, self.storage_chat_id = channel_id, storage_chat_id or None
         self.media_for = media_for or (lambda key: key)
         self.alert = alert or (lambda sig: None)
@@ -171,13 +177,13 @@ class Outbox:
             if not keep:
                 return None
             intent = Intent(intent.kind, intent.group, keep, intent.sort_key)
-            payload = render(intent, urls)
+            payload = render(intent, urls, self.loc)
             knowledge = {it.campaign_id: it.knowledge for it in keep}
             cur = self.conn.execute(
-                "INSERT INTO outbox(kind, grp, payload, knowledge, status, created_at, updated_at) "
-                "VALUES(?, ?, ?, ?, 'pending', ?, ?)",
+                "INSERT INTO outbox(kind, grp, payload, knowledge, status, created_at, updated_at, ch) "
+                "VALUES(?, ?, ?, ?, 'pending', ?, ?, ?)",
                 (intent.kind, intent.group, json.dumps(payload, ensure_ascii=False),
-                 json.dumps(knowledge, ensure_ascii=False), db.ts(now), db.ts(now)))
+                 json.dumps(knowledge, ensure_ascii=False), db.ts(now), db.ts(now), self.ch))
             rid = cur.lastrowid
             for it in keep:
                 if not self.conn.execute("SELECT 1 FROM campaigns WHERE id=?", (it.campaign_id,)).fetchone():
@@ -197,10 +203,10 @@ class Outbox:
         now = db.ts(self.clock())
         with db.tx(self.conn):
             n = self.conn.execute("UPDATE outbox SET status='unknown', updated_at=? "
-                                  "WHERE status='sending'", (now,)).rowcount
+                                  "WHERE status='sending' AND ch=?", (now, self.ch)).rowcount
             m = self.conn.execute("UPDATE outbox SET status='retry', next_attempt_at=?, updated_at=? "
                                   "WHERE status='failed' AND last_error LIKE 'bad_request:%' "
-                                  "AND attempts < 3", (now, now)).rowcount
+                                  "AND attempts < 3 AND ch=?", (now, now, self.ch)).rowcount
         if n or m:
             log.warning("outbox: %d незавершённых отправок → сверка, %d упавших → повтор", n, m)
 
@@ -208,15 +214,15 @@ class Outbox:
     def due(self):
         now = db.ts(self.clock())
         return [r[0] for r in self.conn.execute(
-            "SELECT id FROM outbox WHERE status='pending' "
-            "OR (status IN ('retry','unknown') AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) "
-            "ORDER BY id", (now,))]
+            "SELECT id FROM outbox WHERE ch=? AND (status='pending' "
+            "OR (status IN ('retry','unknown') AND (next_attempt_at IS NULL OR next_attempt_at <= ?))) "
+            "ORDER BY id", (self.ch, now))]
 
     def media_keys(self) -> list[str]:
         """Карточки, нужные неотправленным постам."""
         keys = []
-        for (payload,) in self.conn.execute("SELECT payload FROM outbox WHERE status IN "
-                                            "('pending','retry','unknown','sending')"):
+        for (payload,) in self.conn.execute("SELECT payload FROM outbox WHERE ch=? AND status IN "
+                                            "('pending','retry','unknown','sending')", (self.ch,)):
             p = json.loads(payload)
             for i, part in enumerate(p["parts"]):
                 if str(i) not in p["done"]:
@@ -224,8 +230,8 @@ class Outbox:
         return keys
 
     def open_rows(self):
-        return self.conn.execute("SELECT count(*) FROM outbox WHERE status IN "
-                                 "('pending','sending','retry','unknown')").fetchone()[0]
+        return self.conn.execute("SELECT count(*) FROM outbox WHERE ch=? AND status IN "
+                                 "('pending','sending','retry','unknown')", (self.ch,)).fetchone()[0]
 
     async def process(self) -> dict:
         """Пройти очередь. Возвращает счётчики по исходам."""
@@ -246,7 +252,7 @@ class Outbox:
         по свежим данным, а не отправят устаревший текст."""
         cutoff = db.ts(self.clock() - EXPIRE_AFTER)
         rows = self.conn.execute("SELECT id, payload FROM outbox WHERE status IN ('pending','retry') "
-                                 "AND created_at < ?", (cutoff,)).fetchall()
+                                 "AND created_at < ? AND ch=?", (cutoff, self.ch)).fetchall()
         for rid, payload in rows:
             if json.loads(payload).get("done"):
                 continue                     # часть уже в канале — довести до конца
@@ -318,9 +324,20 @@ class Outbox:
     def _note_last_id(self, mid):
         """Последний id канала, до которого всё сверено. Внутри транзакции записи
         части: иначе после убийства процесса сверка начала бы искать ПОСЛЕ поста."""
-        last = db.kv_get(self.conn, "channel", "last_message_id") or 0
+        last = db.kv_get(self.conn, "channel", self._last_id_key) or 0
         if mid > last:
-            db.kv_set(self.conn, "channel", "last_message_id", mid, self.clock())
+            db.kv_set(self.conn, "channel", self._last_id_key, mid, self.clock())
+
+    @property
+    def _last_id_key(self):
+        return "last_message_id" if self.ch == "ru" else f"last_message_id:{self.ch}"
+
+    def _subj(self, text):
+        return text if self.ch == "ru" else f"{text} ({self.loc.channel_handle})"
+
+    def _akey(self, key):
+        """Ключ тревоги этого канала: у русского прежний, у других — с суффиксом."""
+        return key if self.ch == "ru" else f"{key}:{self.ch}"
 
     def _part_done(self, row: Row, idx: int, ids: list[int]):
         """Часть в канале: запомнить id и сразу обновить знание читателя о её кампаниях."""
@@ -348,8 +365,8 @@ class Outbox:
     def _finish(self, row: Row):
         self._set(row.id, status="sent", sent_at=db.ts(self.clock()), last_error=None,
                   next_attempt_at=None)
-        self.alert(AlertSignal("post-failed", False, "посты снова уходят"))
-        self.alert(AlertSignal("channel-forbidden", False, "права в канале вернулись"))
+        self.alert(AlertSignal(self._akey("post-failed"), False, "посты снова уходят"))
+        self.alert(AlertSignal(self._akey("channel-forbidden"), False, "права в канале вернулись"))
         log.info("outbox %d (%s) отправлен", row.id, row.kind)
 
     def _on_error(self, row: Row, idx: int, e: TelegramError) -> str:
@@ -366,14 +383,14 @@ class Outbox:
         if kind == BAD:
             self._set(row.id, status="failed", last_error=err)
             self.alert(AlertSignal(
-                "post-failed", True, "Telegram отклонил пост — это ошибка бота",
+                self._akey("post-failed"), True, self._subj("Telegram отклонил пост — это ошибка бота"),
                 f"Пост #{row.id} ({row.kind}): {e}\nОн не уйдёт, пока ошибку не исправят. "
                 "После выкатки исправления бот повторит его один раз сам."))
             log.error("outbox %d: 400 — %s", row.id, e)
             return "failed"
         if kind == FORBIDDEN:
             self.alert(AlertSignal(
-                "channel-forbidden", True, "бот не может писать в канал",
+                self._akey("channel-forbidden"), True, self._subj("бот не может писать в канал"),
                 "Бота убрали из канала или сняли право публиковать. Верни боту права "
                 "администратора с правом «Публикация сообщений» — посты догонят сами."))
         else:
@@ -391,11 +408,11 @@ class Outbox:
         part = row.payload["parts"][idx]
         want = plain_lines(part["caption"])
         since = db.parse_ts(row.sending_at) or db.parse_ts(row.created_at)
-        last = db.kv_get(self.conn, "channel", "last_message_id")
+        last = db.kv_get(self.conn, "channel", self._last_id_key)
 
         def stuck(why):
             self.alert(AlertSignal(
-                "post-unknown", True, "не знаю, ушёл ли пост в канал",
+                self._akey("post-unknown"), True, self._subj("не знаю, ушёл ли пост в канал"),
                 f"Пост #{row.id} ({row.kind}): {why}.\nПроверь канал и ответь боту в личке:\n"
                 f"/sent {row.id} — если пост в канале есть\n/resend {row.id} — если его нет"))
             # Сами больше не трогаем (иначе пересылки каждые 2 минуты); напомним через 30 мин.
