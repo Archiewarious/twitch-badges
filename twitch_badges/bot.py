@@ -192,7 +192,9 @@ class BotApp:
                 for _, ob in self.extra_outboxes:
                     ob.storage_chat_id = up
                 self.media.delete_after_upload = delete_after
-                await self.media.ensure([k for k in keys if k][:MEDIA_PER_RUN])
+                # Сначала недостающие, потом лимит: иначе первые 30 ключей — уже
+                # загруженные русские, и карточки других языков не грузились заранее.
+                await self.media.ensure(self.media.missing([k for k in keys if k])[:MEDIA_PER_RUN])
             if not (cfg.channel_id and cfg.publish_enabled):
                 return
             await tick(self.conn, self.outbox, now=now,
