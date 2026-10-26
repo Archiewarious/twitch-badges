@@ -7,7 +7,7 @@ urls — ссылки на категории после канонизации 
 """
 import html
 import re
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from ..domain.categories import _cat_key
 from .locale import RU, Locale
@@ -226,6 +226,24 @@ def window_vague(w):
     return False
 
 
+def stamp(dt, with_time, loc: Locale = RU):
+    """Момент окна: местное время с подписью пояса + UTC (27.10.2026, просьба
+    владельца: «UTC плюс местное, с подписью»). Без часа — только дата.
+    Если в UTC уже другой день — в скобках и дата."""
+    if not with_time:
+        return fmt_dt(dt, False, loc)
+    utc = dt.astimezone(timezone.utc)
+    local = (dt + timedelta(hours=3)) if loc.lang == "ru" else loc.local(dt)
+    same_day = local.date() == utc.date()
+    if loc.lang == "ru":
+        u = f"{utc:%H:%M}" if same_day else f"{utc.day} {RU_MONTHS_GEN[utc.month - 1]} {utc:%H:%M}"
+    elif loc.lang == "en":
+        u = f"{utc:%H:%M}" if same_day else f"{loc.months[utc.month - 1]} {utc.day}, {utc:%H:%M}"
+    else:
+        u = f"{utc:%H:%M}" if same_day else f"{utc.day} de {loc.months[utc.month - 1]}, {utc:%H:%M}"
+    return f"{fmt_dt(dt, True, loc)} {loc.tz_label} ({u} UTC)"
+
+
 def window_line(r, loc: Locale = RU):
     return f"📅 {window_text(r, loc)}"
 
@@ -240,23 +258,21 @@ def window_text(r, loc: Locale = RU):
     et = time_known(w, "end")
     if loc.lang != "ru":
         t = TXT[loc.lang]
-        tail = f" ({loc.tz_label})" if (st or et) else ""
         note = t["dates_unconfirmed"] if w.get("dates_unconfirmed") else ""
         if s and e:
-            return t["from_to"].format(s=fmt_dt(s, st, loc), e=fmt_dt(e, et, loc)) + tail + note
+            return t["from_to"].format(s=stamp(s, st, loc), e=stamp(e, et, loc)) + note
         if e:
-            return t["until"].format(e=fmt_dt(e, et, loc)) + tail + note
+            return t["until"].format(e=stamp(e, et, loc)) + note
         if s:
-            return t["from"].format(s=fmt_dt(s, st, loc)) + tail + note
+            return t["from"].format(s=stamp(s, st, loc)) + note
         return t["tba"]
-    tail = " (МСК)" if (st or et) else ""
     note = " · точные даты уточняются" if w.get("dates_unconfirmed") else ""
     if s and e:
-        return f"С {fmt_dt(s, st)} до {fmt_dt(e, et)}{tail}{note}"
+        return f"С {stamp(s, st)} до {stamp(e, et)}{note}"
     if e:
-        return f"До {fmt_dt(e, et)}{tail}{note}"
+        return f"До {stamp(e, et)}{note}"
     if s:
-        return f"С {fmt_dt(s, st)}{tail}{note}"
+        return f"С {stamp(s, st)}{note}"
     return "Даты пока неизвестны"
 
 

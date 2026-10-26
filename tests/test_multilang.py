@@ -74,14 +74,25 @@ def test_captions_have_no_russian(loc, kind):
     assert not CYR.search(cap), cap
 
 
-def test_dates_in_channel_timezone():
+def test_dates_local_and_utc():
+    """27.10.2026: местное время с подписью пояса + UTC в скобках (во всех каналах)."""
+    from twitch_badges.publisher.captions import window_text
     r = {"title": "X", "status": "active", "cost": "free", "condition": "Смотреть 1 час",
          "window": {"start": datetime(2026, 10, 21, 16, 0, tzinfo=timezone.utc),
                     "end": datetime(2026, 10, 31, 7, 59, tzinfo=timezone.utc)}}
     en = fit_channel_caption("started", r, {}, loc=EN)
-    assert "From Oct 21, 12:00 PM to Oct 31, 3:59 AM (ET)" in en and "Watch for 1 hour" in en
+    assert "From Oct 21, 12:00 PM ET (16:00 UTC) to Oct 31, 3:59 AM ET (07:59 UTC)" in en
+    assert "Watch for 1 hour" in en
     es = fit_channel_caption("started", r, {}, loc=ES)
-    assert "Del 21 de octubre, 10:00 al 31 de octubre, 01:59 (hora CDMX)" in es
+    assert ("Del 21 de octubre, 10:00 hora CDMX (16:00 UTC) al 31 de octubre, 01:59 hora CDMX "
+            "(07:59 UTC)") in es
+    assert window_text(r) == "С 21 октября 19:00 МСК (16:00 UTC) до 31 октября 10:59 МСК (07:59 UTC)"
+    # в UTC уже другой день — дата в скобках
+    late = dict(r, window={"end": datetime(2026, 10, 1, 1, 30, tzinfo=timezone.utc)})
+    assert window_text(late, EN) == "Until Sep 30, 9:30 PM ET (Oct 1, 01:30 UTC)"
+    # без часа — только дата, без поясов
+    coarse = dict(r, window={"end": datetime(2026, 10, 31, tzinfo=timezone.utc), "dates_coarse": True})
+    assert window_text(coarse) == "До 31 октября"
 
 
 def test_card_keys_per_language():

@@ -6,6 +6,7 @@
 import contextlib
 import io
 import json
+import re
 from datetime import timedelta
 
 import mutations as m
@@ -96,6 +97,13 @@ def _markup_rows(markup):
     return [[{"text": b.text, "url": b.url} for b in row] for row in markup.inline_keyboard]
 
 
+def _times(text):
+    """27.10.2026 время в подписях: «19:00 МСК (16:00 UTC)» вместо «… (МСК)» в конце.
+    Сверяем всё остальное побайтно, а формат времени — отдельным тестом."""
+    text = re.sub(r" МСК \((?:\d+ \w+ )?\d\d:\d\d UTC\)", "", text)
+    return text.replace(" (МСК)", "")
+
+
 @pytest.mark.parametrize("mutate", [None, _mut_new, _mut_orphan, _mut_nodate])
 @pytest.mark.parametrize("offset_h", [0, 24 * 12])
 def test_captions_identical(mutate, offset_h):
@@ -118,8 +126,8 @@ def test_captions_identical(mutate, offset_h):
             continue
         n_shown += 1
         for kind in KINDS:
-            assert cap.channel_caption(kind, rn, urls) == bot.channel_caption(kind, ro)
-        assert cap.inline_caption(rn, urls) == bot.inline_caption(ro)
+            assert _times(cap.channel_caption(kind, rn, urls)) == _times(bot.channel_caption(kind, ro))
+        assert _times(cap.inline_caption(rn, urls)) == _times(bot.inline_caption(ro))
         assert cap.inline_desc(rn) == bot.inline_desc(ro)
         assert cap.channel_buttons(rn) == _markup_rows(bot.channel_buttons(ro))
         assert cap.twitch_buttons(rn) == _markup_rows(bot.twitch_buttons(ro))
@@ -129,4 +137,4 @@ def test_captions_identical(mutate, offset_h):
         items_o = [(r["set_id"], r) for r, _ in pairs]
         items_n = [(r["set_id"], r) for _, r in pairs]
         for kind in KINDS:
-            assert cap.album_caption(items_n, kind, g, urls) == bot.album_caption(items_o, kind, g)
+            assert _times(cap.album_caption(items_n, kind, g, urls)) == _times(bot.album_caption(items_o, kind, g))
