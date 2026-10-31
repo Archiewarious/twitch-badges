@@ -340,3 +340,32 @@ def test_fit_long_title_and_album():
 def test_short_caption_untouched():
     r = _rec(condition="Смотреть эфир 30 минут")
     assert cap.fit_channel_caption("started", r) == cap.channel_caption("started", r)
+
+
+def _posts_silence(e):
+    """[(это «последний день»?, ушёл без звука?)] по всем постам в канал."""
+    import json as _json
+    out = []
+    for api, p in e.tg.calls:
+        if api == "sendPhoto":
+            cap = p.get("caption") or ""
+        elif api == "sendMediaGroup":
+            media = p["media"] if isinstance(p["media"], list) else _json.loads(p["media"])
+            cap = media[0].get("caption") or ""
+        else:
+            continue
+        silent = str(p.get("disable_notification", "false")).lower() in ("true", "1")
+        out.append((cap.startswith("⏳"), silent))
+    return out
+
+
+def test_last_day_is_silent(env):
+    """31.10.2026: «последний день» — без звука; анонсы, «стартовало» и прочее — со звуком."""
+    e = env(mutate=new_badge)
+    e.tick()
+    for _ in range(9):
+        e.tick(timedelta(days=1))
+        settle(e)
+    posts = _posts_silence(e)
+    assert any(end for end, _ in posts) and any(not end for end, _ in posts)
+    assert all(end == silent for end, silent in posts), posts

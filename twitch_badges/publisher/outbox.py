@@ -88,7 +88,10 @@ def render(intent: Intent, urls: dict, loc: Locale = RU) -> dict:
                           "campaigns": [c for c, _ in chunk],
                           "caption": fit_album_caption(chunk, intent.kind, group, urls, loc=loc),
                           "buttons": None})
+    # «Последний день — успей получить» — без звука (31.10.2026, просьба владельца).
+    silent = intent.kind == ENDING
     return {"kind": intent.kind, "group": intent.group, "parts": parts, "done": {},
+            "silent": silent,
             "items": [{"campaign_id": it.campaign_id, "set_id": it.record["set_id"],
                        "title": it.record.get("title"), "grp": it.record.get("group"),
                        "from_orphan": bool((it.record.get("window") or {}).get("from_orphan_event")),
@@ -277,7 +280,7 @@ class Outbox:
                       attempts=row.attempts + 1)
             row.attempts += 1
             try:
-                ids = await self._send_part(part)
+                ids = await self._send_part(part, row.payload.get("silent", False))
             except MediaNotReady as e:
                 # Карточка ещё не загружена в служебный канал — запрос не уходил.
                 self._last_kind = NOT_SENT
@@ -292,7 +295,7 @@ class Outbox:
         self._finish(row)
         return "sent"
 
-    async def _send_part(self, part) -> list[int]:
+    async def _send_part(self, part, silent=False) -> list[int]:
         media = [self.media_for(k) for k in part["media"]]
         if part["type"] == "photo":
             markup = None
@@ -301,7 +304,7 @@ class Outbox:
                                                for row in part["buttons"]])
             msg = await self.bot.send_photo(
                 chat_id=self.channel_id, photo=media[0], caption=part["caption"],
-                parse_mode=ParseMode.HTML, reply_markup=markup,
+                parse_mode=ParseMode.HTML, reply_markup=markup, disable_notification=silent,
                 read_timeout=SEND_READ_TIMEOUT, write_timeout=SEND_READ_TIMEOUT)
             ids = [msg.message_id]
         else:
@@ -310,6 +313,7 @@ class Outbox:
                 media=[InputMediaPhoto(media=m, caption=part["caption"] if j == 0 else None,
                                        parse_mode=ParseMode.HTML if j == 0 else None)
                        for j, m in enumerate(media)],
+                disable_notification=silent,
                 read_timeout=SEND_READ_TIMEOUT, write_timeout=SEND_READ_TIMEOUT)
             ids = [m.message_id for m in msgs]
         return ids
