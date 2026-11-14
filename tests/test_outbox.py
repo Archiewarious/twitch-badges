@@ -360,7 +360,7 @@ def _posts_silence(e):
 
 
 def test_last_day_is_silent(env):
-    """31.10.2026: «последний день» — без звука; анонсы, «стартовало» и прочее — со звуком."""
+    """31.10.2026: «последний день» — всегда без звука; остальное со звуком (кроме пачек)."""
     e = env(mutate=new_badge)
     e.tick()
     for _ in range(9):
@@ -368,4 +368,24 @@ def test_last_day_is_silent(env):
         settle(e)
     posts = _posts_silence(e)
     assert any(end for end, _ in posts) and any(not end for end, _ in posts)
-    assert all(end == silent for end, silent in posts), posts
+    assert all(silent for end, silent in posts if end), posts
+    assert not posts[0][1]
+
+
+def test_burst_rings_once(env):
+    """14.11.2026: несколько постов подряд — звенит только первый, остальные без звука;
+    следующий пост спустя время — снова со звуком."""
+    def mutate(s):
+        keys = []
+        for i in range(4):
+            keys += m.new_campaign(s, f"B{i}", [(f"b-{i}", f"B {i}")], start=T0 + m.days(2),
+                                   end=T0 + m.days(9), added_at=T0 - m.hours(5 - i))
+        return keys
+    e = env(mutate=mutate)
+    settle(e, ticks=4, step=timedelta(minutes=1))
+    burst = [silent for _, silent in _posts_silence(e)]
+    assert len(burst) >= 3 and burst == [False] + [True] * (len(burst) - 1), burst
+    e.tick(timedelta(days=2, minutes=5))                       # «стартовало» — уже не пачка
+    settle(e)
+    later = [silent for _, silent in _posts_silence(e)][len(burst):]
+    assert later and later[0] is False, later

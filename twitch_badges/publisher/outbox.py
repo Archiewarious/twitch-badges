@@ -46,6 +46,9 @@ log = logging.getLogger(__name__)
 
 SEND_READ_TIMEOUT = 60
 PART_PAUSE = 2.0                # между частями альбома
+# Пачка постов подряд: звенит только первый, остальные в течение окна — без звука
+# (14.11.2026, просьба владельца).
+BURST_QUIET = timedelta(minutes=10)
 RETRY_BASE = 30                 # с, первый повтор «запрос не ушёл»
 RETRY_MAX = 1800
 FORBIDDEN_RETRY = 1800
@@ -280,7 +283,10 @@ class Outbox:
                       attempts=row.attempts + 1)
             row.attempts += 1
             try:
-                ids = await self._send_part(part, row.payload.get("silent", False))
+                silent = row.payload.get("silent", False) or self._in_burst()
+                ids = await self._send_part(part, silent)
+                if not silent:
+                    db.kv_set(self.conn, "channel", self._loud_key, db.ts(self.clock()), self.clock())
             except MediaNotReady as e:
                 # Карточка ещё не загружена в служебный канал — запрос не уходил.
                 self._last_kind = NOT_SENT
@@ -331,6 +337,14 @@ class Outbox:
         last = db.kv_get(self.conn, "channel", self._last_id_key) or 0
         if mid > last:
             db.kv_set(self.conn, "channel", self._last_id_key, mid, self.clock())
+
+    def _in_burst(self):
+        last = db.parse_ts(db.kv_get(self.conn, "channel", self._loud_key))
+        return last is not None and self.clock() - last < BURST_QUIET
+
+    @property
+    def _loud_key(self):
+        return f"last_loud_at:{self.ch}"
 
     @property
     def _last_id_key(self):
