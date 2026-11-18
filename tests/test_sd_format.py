@@ -297,6 +297,26 @@ def test_format_drift_detected(mutate, needle):
     assert any(needle in p for p in problems(snap))
 
 
+def test_no_hidden_field_is_fine():
+    """18.11.2026: SD убрал hidden из availability — это не дрейф формата."""
+    snap = load_fixture()["snapshot"]
+
+    def strip(x):
+        if isinstance(x, dict):
+            if "twitch_global_badges" not in x:          # у событий hidden остался
+                x.pop("hidden", None)
+            for v in x.values():
+                strip(v)
+        elif isinstance(x, list):
+            for v in x:
+                strip(v)
+    strip(snap)
+    from twitch_badges.sources import format as fmt
+    p = fmt.Problems()
+    fmt.check_availability(p, snap["events"], snap.get("page_availability"))
+    assert list(p) == []
+
+
 def test_short_catalog_time_is_fine():
     snap = load_fixture()["snapshot"]
     m.old_time_format(snap)

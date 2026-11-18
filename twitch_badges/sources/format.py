@@ -152,9 +152,9 @@ def check_availability(problems, events, page_avail):
     if not problems.check(avs, "availability: не нашли НИ ОДНОЙ записи — "
                                "перестали видеть окна и условия"):
         return
-    problems.check(any("hidden" in av for av in avs),
-                   "availability: пропало поле hidden — не отличим черновик "
-                   "модератора от опубликованных данных")
+    # hidden (черновик модератора) больше не обязателен: 18.11.2026 SD убрал поле
+    # из availability совсем, черновики в выдачу не попадают (ещё до смены в
+    # снимках не было ни одного hidden=true). Если вернётся — по-прежнему учитываем.
     # Поле переименовывали: steps → objectives (13.09.2026). Проверка поймала это
     # сразу; принимаем любое из имён, но хотя бы одно обязано быть.
     problems.check(any(av.get("objectives") or av.get("steps") for av in avs),
